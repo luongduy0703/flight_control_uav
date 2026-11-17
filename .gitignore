@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv-pc/
+
+# Native build (MAVSDK) - rebuild via tools/build_mavsdk_pi.sh
+.native/
+
+# Runtime logs
+session-logs/
+**/session-logs/
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
