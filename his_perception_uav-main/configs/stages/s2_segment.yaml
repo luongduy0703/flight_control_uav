@@ -1,0 +1,17 @@
+# =============================================================================================
+# Stage 2 - segment: vat dang xet (1 vat / khung) -> ROI vuong quanh bbox -> model (configs/models/s2_segment_ncnn.yaml)
+# -> mask mat tren, tam (px), yaw (do, tren anh). Code: src/stages/s2_segment/ (segmenter, mask_shape).
+# Ghi de: --set s2_segment.roi_scale=1.3
+# =============================================================================================
+model_cfg: configs/models/s2_segment_ncnn.yaml # model NCNN + pixel input (320) + tien xu ly -> nap vao muc `model`
+
+roi_image_px: [960, 544] # [w, h]: ROI cat tren anh letterbox 960 x 544 cua anh goc (giong s1 va giong luc train s2:
+# data/images_960×544). Chi vung ROI cua anh goc duoc thu 0.5 lan -> pixel trung voi letterbox ca anh roi cat, khong
+# can tao anh 960 x 544 moi khung. Mask / tam tra ve toa do anh goc. [0, 0] = cat thang tren anh goc (model cu).
+roi_pad_value: 114 # mau dem cua anh letterbox (= s1 pad_value) cho phan ROI nam ngoai anh
+roi_scale: 1.5 # ROI = hinh vuong tam bbox, canh = 1.5 x canh dai bbox (anh 960 x 544), kep trong anh -> resize ve input_px
+conf_thr: 0.25 # bo instance conf < 0.25
+nms_iou: 0.7
+max_det: 300
+mask_logit_thr: 0.0 # mask = logit > 0 (sigmoid > 0.5), giong ultralytics
+min_select_ioa: 0.5 # instance cua vat: box nam >= 50 % trong bbox detect, lay conf cao nhat

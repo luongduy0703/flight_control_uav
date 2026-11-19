@@ -1,3 +1,6 @@
 # Offline analysis of PX4 ULog files; not needed by the flight console.
 numpy>=1.24,<3
 pyulog>=1.1,<2
+# Live drift viewer (tools/drift_viewer.py) on the laptop.
+matplotlib>=3.5
+pymavlink>=2.4

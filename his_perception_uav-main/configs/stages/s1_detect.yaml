@@ -1,0 +1,18 @@
+# =============================================================================================
+# Stage 1 - detect: anh 1920 x 1080 -> model (configs/models/s1_detect_ncnn.yaml) -> box vat (anh goc).
+# Code: src/stages/s1_detect/ (letterbox, tiling, detector). Ghi de: --set s1_detect.conf_thr=0.5 s1_detect.mode=tile
+# s1 chi chay khi bat dau / chua co vat / vat bi loai / mat vat (pipeline/session.cpp); cac khung khac s2 bam ROI.
+# =============================================================================================
+model_cfg: configs/models/s1_detect_ncnn.yaml # model NCNN + pixel input (960 x 544) + tien xu ly -> nap vao muc `model`
+
+# --- Dua anh vao model ---
+mode: full # full: CA ANH letterbox ve input_px (960 x 544, thu 0.5 lan) -> 1 lan chay model / khung
+# tile: cat anh thanh o tile_px x tile_px (640, overlap 0.2 -> 8 tile, 8 lan chay model / khung; model tile 640 cu)
+tile_px: 640 # chi dung o mode tile: canh tile (px anh goc)
+overlap: 0.2 # chi dung o mode tile: 2 tile canh nhau chong 20 %
+
+# --- Loc, ghep box ---
+conf_thr: 0.60 # bo box conf < 0.60
+nms_iou: 0.7 # NMS theo class: IoU > 0.7 voi box conf cao hon -> bo
+cross_window_ios: 0.8 # chi mode tile: box bi cat o mep tile, giao / dien tich box nho > 0.8 voi box tile khac -> bo
+max_det: 100 # so box toi da moi khung

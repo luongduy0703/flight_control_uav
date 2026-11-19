@@ -1,0 +1,28 @@
+# Intrinsic camera - ban chinh (version 2, thay v1 ngay 2026-11-09; ban sao v1: object_detection/_backup/calib_v1_20261109/).
+# Doi sensor mode, do phan giai, net hay xoay anh -> hieu chuan lai, ghi bo so moi, tang `version`, cap nhat `date`.
+#
+# Mo hinh OpenCV pinhole + meo (k1, k2, p1, p2, k3). Quy uoc pixel cua OpenCV: TAM pixel (0, 0) o toa do (0, 0).
+# Hieu chuan tren ANH NHAN DUOC (da lat 180 do tren Pi), khong undistort anh khi chay.
+version: 2
+date: "2026-11-09" # ngay nhan bo so (nguoi dung cung cap)
+source: user-provided (OpenCV calibrateCamera, rms 0.284 px)
+camera: Raspberry Pi Camera Module 3 Wide (IMX708)
+
+# Sensor mode gan voi bo so nay: /info cua Pi phai khop (real_time kiem tra khi khoi dong).
+sensor_mode:
+  image_size_px: [1920, 1080] # [w, h] anh ra
+  sensor_mode_px: [2304, 1296] # che do cam bien du goc nhin, khong crop
+  focus_m: 0.8 # net KHOA, LensPosition = 1 / focus_m = 1.25 dioptre
+  lens_position: 1.25
+  rotate_deg: 180 # lat tren cam bien (camera lap nguoc)
+  fps: 30.0
+
+model: pinhole
+camera_matrix: # K = [[fx, 0, cx], [0, fy, cy], [0, 0, 1]], px
+  - [823.31308916483306, 0.0, 957.33525630699887]
+  - [0.0, 823.64436870659335, 534.99149998227404]
+  - [0.0, 0.0, 1.0]
+dist_coeffs: [-0.068114643442413456, 0.17221801645693313, -0.00024882191235463724, -0.00073805773297670112, -0.1090905537185165]
+
+error:
+  reprojection_rms_px: 0.28366831763236033

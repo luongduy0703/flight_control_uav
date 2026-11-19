@@ -1,0 +1,21 @@
+# =============================================================================================
+# Chay OFFLINE (uavp_offline): mot phien chon vat s1 -> s3 tren thu muc anh / video / mot anh lap lai.
+# Dung de so ket qua va thoi gian voi ban Python, kiem tra model sau khi doi.
+#   ./build/uavp_offline --cfg configs/run/offline.yaml --source <thu muc anh | video>
+#   ./build/uavp_offline --cfg configs/run/offline.yaml --image <anh>      # them s1/s2/s3 _*.jpg
+#   Ghi de: --set max_frames=30 s3_select.D_m=2.0 s1_detect.mode=full
+# Duong dan tinh tu thu muc goc uav_perception_pi/. Gia dinh: camera nhin thang xuong, UAV hover, vat dung yen.
+# =============================================================================================
+
+max_frames: 60 # ket thuc phien sau 60 khung du con track DEFER
+calib_K: configs/calib/K_1920x1080.yaml # K + he so meo (anh 1920x1080), dung chung cho moi stage
+runs_root: runs # moi phien: runs/<ngay-gio>_offline/
+
+cpu: # giong run/real_time.yaml: do thoi gian offline cung so nhan voi luc bay
+  cores: [2, 3] # [] = khong gioi han (PC / WSL co the it nhan hon: dat [] hoac nhan co that)
+
+stages: # cung file stage voi run/real_time.yaml
+  s1_detect: configs/stages/s1_detect.yaml
+  s2_segment: configs/stages/s2_segment.yaml
+  s3_select: configs/stages/s3_select.yaml
+  s4_fusion: configs/stages/s4_fusion.yaml

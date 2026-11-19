@@ -1,0 +1,20 @@
+# =============================================================================================
+# Stage 3 - select: CHI MOT vat dang xet = vat gan tam anh nhat; do W tu mask, DEFER / OK / ABORT -> OK = selected
+# (tam, yaw, mask). Khong dung model. Code: src/stages/s3_select/ (tracker, measure, decide, rank).
+# Ghi de: --set s3_select.D_m=2.0 s3_select.n_min=3
+# =============================================================================================
+D_m: 0.66 # khoang cach UOC TINH camera -> san (m), hang so; s3 doi kich thuoc mask (px) ra mm. LiDAR do san ~0.64 m voi
+# T_CL v1 (2026-11-06) = ~0.66 m voi T_CL hien tai (v2 dai hon v1 ~18-20 mm theo truc quang). Lay san (xa hon mat tren)
+# -> W uoc tinh hoi lon, an toan cho nguong too_big. Khoang cach THAT toi mat tren do o s4 (d, LiDAR).
+# Vat ABORT -> s1 chon vat gan tam tiep theo (chua xet). So vat xet cung luc co dinh 1 (pipeline/session.hpp: kTargets).
+match_radius_px: 40 # ghep detection voi track neu tam cach tam DU DOAN (van toc) <= 40 px
+
+# --- Tracking (UAV hover van troi: vat dich tren anh) ---
+# s1 CHI chay khi bat dau / chua co vat / vat bi loai, hoac khi mat vat (s2 khong ra mask o khung truoc). Cac khung
+# khac: s2 chay tren ROI quanh vi tri DU DOAN cua vat (bbox dich theo van toc tam mask), 1 vat / khung.
+velocity_alpha: 0.5 # van toc tam mask (px / khung) = 0.5 x do moi + 0.5 x cu (lam muot nhieu mask)
+n_min: 5 # so lan do hop le toi thieu truoc khi ket luan
+w_max_mm: 80 # median W > 80 mm -> ABORT too_big (canh kep 8 cm)
+conf_min: 0.70 # mean conf detection < 0.70 -> ABORT low_conf
+mask_min_px: 5 # khong co mask / mask < 5 px -> lan do khong hop le, giu DEFER
+mask_small_max_frames: 10 # 10 lan do khong hop le LIEN TIEP -> ABORT mask_small

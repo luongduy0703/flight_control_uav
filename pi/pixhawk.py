@@ -6,6 +6,29 @@ import time
 from deployment import validate_connection
 
 
+IDENTITY_TIMEOUT_S = 3.0  # > 2 PX4 HEARTBEAT periods (1 Hz)
+PARAM_ATTEMPTS = 5        # x MAVSDK's own ~2 s retries: covers a QGC full parameter download
+PARAM_RETRY_DELAY_S = 1.0
+
+
+def read_param(getter, name):
+    """Read one PX4 parameter, retrying only MAVSDK TIMEOUT.
+
+    On the shared TELEM1 link, QGC downloading ~1000 parameters queues PX4's
+    replies; a single read can then time out although the link is healthy.
+    Any other error, or TIMEOUT after the last attempt, is raised unchanged.
+    """
+    for attempt in range(1, PARAM_ATTEMPTS + 1):
+        try:
+            return getter(name)
+        except Exception as error:
+            if not str(error).startswith('TIMEOUT') or attempt == PARAM_ATTEMPTS:
+                raise
+            logging.getLogger(__name__).warning(
+                'Parameter %s timed out (attempt %d/%d; QGC parameter download?), retrying',
+                name, attempt, PARAM_ATTEMPTS)
+            time.sleep(PARAM_RETRY_DELAY_S)
+
 HEALTH_FIELDS = ('is_gyrometer_calibration_ok', 'is_accelerometer_calibration_ok',
                  'is_magnetometer_calibration_ok', 'is_local_position_ok',
                  'is_global_position_ok', 'is_home_position_ok', 'is_armable')
@@ -55,13 +78,24 @@ class Pixhawk:
             self.drone = self.sdk.first_autopilot(10.0)
             if self.drone is None:
                 raise RuntimeError('No autopilot heartbeat')
-            if (self.drone.get_system_id() != system_id or
-                    self.drone.autopilot_type() != Autopilot.PX4 or
-                    self.drone.vehicle_type() != Vehicle.MULTICOPTER):
-                raise RuntimeError('Expected configured PX4 multicopter')
+
+            def expected_vehicle():
+                return (self.drone.get_system_id() == system_id and
+                        self.drone.autopilot_type() == Autopilot.PX4 and
+                        self.drone.vehicle_type() == Vehicle.MULTICOPTER)
+            # first_autopilot() can return on the first autopilot message (e.g. ATTITUDE
+            # at 100 Hz) before the 1 Hz HEARTBEAT that sets autopilot/vehicle type;
+            # until then both read GENERIC. Wait for it; the check itself is unchanged.
+            deadline = time.monotonic() + IDENTITY_TIMEOUT_S
+            while not expected_vehicle() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not expected_vehicle():
+                raise RuntimeError(
+                    f'Expected configured PX4 multicopter, got system {self.drone.get_system_id()} '
+                    f'{self.drone.autopilot_type()} {self.drone.vehicle_type()}')
             self.action, self.telemetry = Action(self.drone), Telemetry(self.drone)
             self.param = Param(self.drone)
-            self.hitl = self.param.get_param_int('SYS_HITL')
+            self.hitl = read_param(self.param.get_param_int, 'SYS_HITL')
             if self.hitl != (1 if profile == 'hitl' else 0):
                 raise RuntimeError(f'SYS_HITL={self.hitl} does not match {profile}')
             for name in ('armed', 'landed_state', 'flight_mode', 'health_all_ok', 'health', 'position'):
@@ -75,8 +109,13 @@ class Pixhawk:
                     with self.lock:
                         self.cache[name] = (value, time.monotonic())
                 self.handles.append(getattr(self.telemetry, 'subscribe_' + name)(callback))
-            self.telemetry.set_rate_health(2.0)
-            self.telemetry.set_rate_landed_state(2.0)
+            # PX4 applies stream rates to the whole link. Through mavlink-routerd the
+            # TELEM1 link is shared with perception, which needs PX4's default rates
+            # (ATTITUDE 100 Hz, LOCAL_POSITION_NED 30 Hz): never lower them there.
+            self.shared_link = profile == 'hardware' and connection.startswith('udpin://')
+            if not self.shared_link:
+                self.telemetry.set_rate_health(2.0)
+                self.telemetry.set_rate_landed_state(2.0)
         except BaseException:
             try:
                 self.sdk.destroy()

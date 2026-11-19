@@ -1,0 +1,19 @@
+# Dich vu systemd: uavp_fc_bridge chay tu luc Pi khoi dong, doc MAVLink Pixhawk (TELEM2 -> UART GPIO) -> RAM
+# (/dev/shm/uavp_fc). Cai bang tools/install_fc_bridge.sh (thay __USER__, __DIR__).
+#   systemctl status uavp-fc-bridge      journalctl -u uavp-fc-bridge -f
+[Unit]
+Description=uavp: Pixhawk MAVLink -> shared memory (/dev/shm/uavp_fc)
+After=multi-user.target
+
+[Service]
+Type=simple
+User=__USER__
+SupplementaryGroups=dialout
+WorkingDirectory=__DIR__
+ExecStart=__DIR__/build/uavp_fc_bridge --cfg configs/run/real_time.yaml
+Restart=always
+RestartSec=2
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

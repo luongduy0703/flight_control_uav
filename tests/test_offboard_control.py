@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "pi"))
 
+import json
 import threading
 import sys
 import unittest
@@ -566,26 +567,48 @@ class ControllerTests(unittest.TestCase):
         self.fc.make_offboard.return_value.destroy.assert_not_called()
 
 
-    def test_constructor_subscriptions_are_read_only_and_filter_heartbeat_source(self):
+    def construct(self, connection, profile='hardware'):
+        """Real OffboardControl.__init__ over a stubbed Pixhawk transport."""
         base = self.fc
         base.param = Mock()
         base.param.get_param_float.return_value = -1.0
         base.telemetry = Mock()
         base.handles = []
-        def base_init(obj, *args):
+        base.drone.get_system_id.return_value = 1
+
+        def base_init(obj, connection, profile, *args):
             for key in ('lock', 'cache', 'sdk', 'drone', 'action', 'param', 'telemetry',
                         'handles', 'phase', 'operation_at', 'hitl', 'profile'):
                 setattr(obj, key, getattr(base, key))
             obj.enabled = False
+            obj.shared_link = profile == 'hardware' and connection.startswith('udpin://')
         direct_factory, offboard_factory = Mock(), Mock()
         direct = ModuleType('mavsdk.plugins.mavlink_direct')
         direct.MavlinkDirect = direct_factory
+        direct.MavlinkMessage = lambda **fields: SimpleNamespace(**fields)
         offboard = ModuleType('mavsdk.plugins.offboard')
         offboard.Offboard, offboard.PositionNedYaw = offboard_factory, Mock()
         with patch.dict(sys.modules, {'mavsdk.plugins.mavlink_direct': direct,
                                      'mavsdk.plugins.offboard': offboard}), \
                 patch('offboard_control.Pixhawk.__init__', new=base_init):
-            fc = OffboardControl('serial:///dev/fake:921600', 'hardware')
+            fc = OffboardControl(connection, profile)
+        return fc, direct_factory, offboard_factory
+
+    def test_shared_router_link_never_lowers_perception_stream_rates(self):
+        fc, direct_factory, _ = self.construct('udpin://127.0.0.1:14540')
+        self.fc.telemetry.set_rate_attitude_euler.assert_not_called()
+        self.fc.telemetry.set_rate_position_velocity_ned.assert_not_called()
+        sent = [json.loads(call.args[0].fields_json)
+                for call in direct_factory.return_value.send_message.call_args_list]
+        self.assertTrue(all(m['command'] == 511 and m['param2'] == 0.0 for m in sent))
+        self.assertEqual({int(m['param1']) for m in sent}, {1, 30, 32, 74, 132, 245})
+        fc.action.arm.assert_not_called()
+
+    def test_constructor_subscriptions_are_read_only_and_filter_heartbeat_source(self):
+        fc, direct_factory, offboard_factory = self.construct('serial:///dev/fake:921600')
+        base = self.fc
+        base.telemetry.set_rate_attitude_euler.assert_called_once_with(5.0)
+        direct_factory.return_value.send_message.assert_not_called()
         offboard_factory.assert_not_called()
         fc.action.arm.assert_not_called()
         base.param.get_param_float.assert_called_once_with('NAV_MIN_LTR_ALT')

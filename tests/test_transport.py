@@ -61,6 +61,35 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(validate_connection('hitl', 'udpin://127.0.0.1:14540'),
                          'udpin://127.0.0.1:14540')
 
+    def test_param_read_retries_timeout_only(self):
+        from pixhawk import read_param, PARAM_ATTEMPTS
+        with patch('pixhawk.time.sleep') as sleep:
+            getter = Mock(side_effect=[RuntimeError("TIMEOUT; origin: get_param_int(); params: ('SYS_HITL',)"),
+                                       RuntimeError('TIMEOUT; again'), 0])
+            self.assertEqual(read_param(getter, 'SYS_HITL'), 0)
+            self.assertEqual(getter.call_count, 3)
+            getter = Mock(side_effect=RuntimeError('WRONG_TYPE; origin'))
+            with self.assertRaisesRegex(RuntimeError, 'WRONG_TYPE'):
+                read_param(getter, 'SYS_HITL')
+            self.assertEqual(getter.call_count, 1)  # Only TIMEOUT is retried.
+            getter = Mock(side_effect=RuntimeError('TIMEOUT; forever'))
+            with self.assertRaisesRegex(RuntimeError, 'TIMEOUT'):
+                read_param(getter, 'SYS_HITL')
+            self.assertEqual(getter.call_count, PARAM_ATTEMPTS)
+
+    def test_identity_waits_for_late_heartbeat_but_still_rejects_wrong_vehicle(self):
+        # Router: ATTITUDE from 1/1 can arrive before the 1 Hz HEARTBEAT -> GENERIC at first.
+        with fake_sdk() as (sdk, plugins), patch('pixhawk.time.sleep'):
+            drone = sdk.first_autopilot.return_value
+            drone.autopilot_type.side_effect = ['GENERIC', 'GENERIC', 'PX4', 'PX4']
+            fc = Pixhawk('udpin://127.0.0.1:14540', 'hardware')
+            self.assertEqual(fc.hitl, 0)
+        with fake_sdk() as (sdk, plugins), patch('pixhawk.IDENTITY_TIMEOUT_S', 0.0):
+            sdk.first_autopilot.return_value.vehicle_type.return_value = 'FIXED_WING'
+            with self.assertRaisesRegex(RuntimeError, 'Expected configured PX4 multicopter'):
+                Pixhawk('udpin://127.0.0.1:14540', 'hardware')
+            sdk.destroy.assert_called_once()
+
     def test_pc_hitl_constructor_still_checks_sys_hitl_without_actuation(self):
         with fake_sdk(hitl=1) as (sdk, plugins):
             fc = Pixhawk('udpin://127.0.0.1:14540', 'hitl')

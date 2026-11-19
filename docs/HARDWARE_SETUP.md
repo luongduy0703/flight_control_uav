@@ -46,7 +46,7 @@ Trong QGC, sau khi phục hồi cấu hình thật và reboot, kiểm tra:
    RTL/LAND và geofence theo sân bay thử. Các giá trị HITL không tự được
    xóa khi không có trong overlay; xem [PX4 Offboard loss](https://docs.px4.io/v1.17/en/flight_modes/offboard).
 4. Xác nhận cổng USB MAVLink của Pixhawk hoạt động sau khi đổi khỏi HITL;
-   `MAV_1_*` và `SER_TEL2_BAUD` trong overlay dành cho TELEM2, không cấu
+   `MAV_0_*` và `SER_TEL1_BAUD` trên bo dành cho TELEM1, không cấu
    hình cổng USB. Bốn log cũ từng có lỗi compass/IMU, trượt x/y và mất
    Offboard; cần ULog mới để chứng minh các lỗi đó đã hết.
 
@@ -87,16 +87,22 @@ router cũ dùng cùng USB trước khi chạy lệnh bên dưới.
 
 ## 3. Router trên Pi và QGC trên PC
 
-Mở terminal thứ nhất trên Pi, từ thư mục release. Thay `IP_PC` bằng IPv4
-thực của PC đang chạy QGC và `/dev/ttyACM0` bằng thiết bị Pixhawk thực tế:
+Trên Pi, từ thư mục controller, thay `IP_PC` bằng IPv4 hiện tại của PC
+chạy QGC (`ip -4 addr` trên PC; DHCP có thể đổi IP, khi đó chạy lại):
 
 ```bash
-bash tools/run_hardware_router.sh IP_PC /dev/ttyACM0
+bash tools/run_hardware_router.sh IP_PC            # mặc định /dev/ttyAMA0 (TELEM1)
 ```
 
-Script tạo cấu hình tạm, tắt TCP server mặc định của router và chỉ dùng
-USB Pixhawk cùng hai endpoint UDP nêu trong sơ đồ. Giữ router chạy. Nếu
-Pi đã có dịch vụ router giữ USB, dừng dịch vụ đó trước. PC mở QGC, dùng
+Router chạy **thủ công, ở foreground**: script điền
+[`config/mavlink-router.conf`](../config/mavlink-router.conf) vào file tạm và chạy
+`mavlink-routerd` trong terminal đó. Chưa chạy script thì QGC, console và perception
+đều không có MAVLink; **Ctrl+C** là ngắt hết (chỉ Ctrl+C khi DISARM và console đã đóng).
+Lần chạy đầu script tắt dịch vụ tự khởi động `mavlink-router.service` (hỏi sudo một
+lần) để router không tự chạy khi Pi bật. Muốn chạy nền lại như cũ:
+`sudo systemctl enable --now mavlink-router`. Script từ chối nếu đã có
+`mavlink-routerd` khác hoặc tiến trình khác đang mở cổng serial (chỉ một router).
+PC mở QGC, dùng
 UDP port 14550 và xác nhận nhìn thấy đúng Pixhawk, `DISARM`,
 `ON_GROUND`, tham số/cảnh báo đúng UAV thật. QGC qua UDP là đường giám
 sát và tiếp quản; terminal PC kết nối Pi qua SSH.
@@ -167,3 +173,107 @@ echo '{"latitude_deg": 21.0285, "longitude_deg": 105.8542, "altitude_m": 10}' > 
 `--ekf-origin LAT LON ALT_M` ghi đè file cho một phiên.
 `--check` không gửi gốc toạ độ. Nếu Pixhawk vừa reboot thì `--check` sẽ
 báo `is_armable=false` cho tới khi một phiên có `--enable-actuation` gửi gốc.
+
+## Chạy perception từ console (lệnh `perception`)
+
+Perception (`uavp_real_time`, C++, thư mục `his_perception_uav-main` / trên Pi
+`~/uav_perception_pi`) vẫn là **chương trình riêng**. Console chỉ khởi động nó
+như tiến trình con, ra lệnh bắt đầu/dừng quét và theo dõi log của nó. Perception
+lỗi/crash thì chỉ nó dừng; console vẫn gửi setpoint, UAV vẫn HOLD.
+
+### Đường MAVLink chung: một router giữ TELEM1
+
+Chạy `bash tools/run_hardware_router.sh IP_PC` (mục 3). Router là tiến trình **duy nhất** mở
+`/dev/ttyAMA0`; control nhận ở UDP 14540, `uavp-fc-bridge` ở 14551, QGC ở 14550.
+USB Pixhawk không đưa vào router. Đổi dịch vụ router từ USB sang TELEM1 ảnh
+hưởng tới perception của cả nhóm: thống nhất trước khi đổi.
+
+Kiểm tra trước bay:
+```bash
+sudo fuser -v /dev/ttyAMA0                     # chỉ có mavlink-routerd (terminal chạy script)
+systemctl is-active uavp-fc-bridge
+cd ~/uav_perception_pi && ./build/uavp_fc_check --cfg configs/run/real_time.yaml --seconds 20
+```
+
+### Chạy
+
+```bash
+.venv/bin/python pi/console.py --profile hardware --position-source flow \
+  --connection udpin://127.0.0.1:14540 --height 1.5 --enable-actuation \
+  --perception-dir ~/uav_perception_pi
+```
+
+- Mở console là perception khởi động luôn (nạp model, camera, LiDAR, Pixhawk).
+  Chờ dòng `[perception READY ...]` **trước khi ARM**. Nếu lỗi 3 lần liên tiếp:
+  `FAILED` + lý do; sửa xong gõ `perception restart`. Console vẫn bay được.
+- `perception`: chỉ nhận khi đang **HOLD sau takeoff** (armed, IN_AIR, không
+  bị QGC tiếp quản) và perception đang `WAITING`. Console gửi `COMMAND_LONG`
+  31010 tới 1/191 (lấy từ `configs/run/real_time.yaml` của perception), bridge
+  trả ACK; dòng `[perception SCANNING]` đến từ log perception.
+- **Thử trên bàn / tháo cánh** (`--perception-bench`): `perception` nhận thêm khi UAV
+  **DISARM và ON_GROUND** (telemetry còn mới). Trên mặt đất độ cao optical flow ≈ 0 nên
+  đặt khoảng cách camera → mặt phẳng bằng tay:
+  ```bash
+  .venv/bin/python pi/console.py --profile hardware --position-source flow \
+    --connection udpin://127.0.0.1:14540 --height 1.5 --enable-actuation \
+    --perception-dir ~/uav_perception_pi --perception-bench \
+    --perception-set distance.source=fixed distance.fixed_m=0.7
+  ```
+  Gõ `arm`/`takeoff` khi đang quét bench: console gửi STOP **trước** lệnh; ARM bằng
+  QGC/RC thì console tự STOP ở vòng kiểm tra kế tiếp. Khi đã bay, vẫn chỉ nhận ở HOLD.
+- **Kết quả về laptop**: trên laptop, ở thư mục repo, để chạy song song
+  `python3 tools/pull_perception_results.py` (hỏi mật khẩu SSH một lần, Ctrl+C dừng).
+  Mỗi lần quét xong (kể cả quét hỏng/dừng giữa chừng) thành một thư mục
+  `results_perception/DD-MM-YYYY_HH-MM-SS_<KET_QUA>` (giờ Pi lúc bắt đầu chạy perception):
+  `CO_VAT`, `CO_VAT_CHUA_FUSION`, `KHONG_CO_VAT`, `LOI`, `DUNG_GIUA_CHUNG`; trong đó có
+  `result.json`, `final.jpg`, `run.log`, `timing.csv`… và `perception.log`. Lần đầu chỉ ghi
+  nhớ các lần quét cũ trên Pi; `--all --once` để chép cả chúng.
+- **Chia nhân CPU** (đo 2026-11-18: perception quét dùng ~1,9 nhân, 92–99% nhân 2/3): console +
+  MAVSDK (`--control-cores`, mặc định `0,1`) và `mavlink-routerd` (`CONTROL_CORES`, mặc định
+  `0,1`) chạy trên nhân 0/1; perception tự ghim vào `cpu.cores: [2, 3]`. Tắt ghim:
+  `--control-cores ''` / `CONTROL_CORES= bash tools/run_hardware_router.sh ...`.
+- `perception stop`: dừng quét bất cứ lúc nào. Nếu UAV rời HOLD (`fly`, `land`,
+  QGC tiếp quản) khi đang quét, console tự gửi STOP một lần.
+- Quét xong: `[perception DONE: result in runs/...]` (thư mục trên Pi), rồi
+  perception tự khởi động lại để sẵn sàng lần sau.
+- `status` có thêm mục `perception` (trạng thái, lỗi gần nhất, file log).
+- Viewer trên laptop chỉ để **xem**: `python3 his_perception_uav-main/tools/remote_viewer.py --host 192.168.50.1` (từ thư mục repo control trên laptop).
+  SPACE trên viewer bị tắt (`start.accept_viewer_key=false`) khi perception do
+  console chạy; chỉ console được ra lệnh quét. Phím `q` trên viewer vẫn làm
+  perception thoát (console tự khởi động lại).
+- Log perception: `session-logs/perception-*.log` cạnh log console.
+- Perception **không bao giờ gửi lệnh bay**. Bay tới toạ độ vật (`p_W`) chưa
+  được nối; `calib/T_BC.yaml` vẫn là giá trị tạm.
+
+### Sự cố: console báo `ParamError: TIMEOUT ... SYS_HITL`, QGC kẹt "loading vehicle data"
+PX4 nhận heartbeat từ Pi được nhưng không trả lời yêu cầu (tham số, lệnh). Kiểm tra:
+1. Chỉ một router (`pgrep -a mavlink-routerd`). Nếu có hai router cùng mở `/dev/ttyAMA0`:
+   DISARM, đóng console, Ctrl+C rồi chạy lại script.
+2. Chiều Pi → Pixhawk: dây TX Pi (GPIO14, chân 8) → RX TELEM1 (chân 3) và GND. Nếu dữ
+   liệu từ Pixhawk vẫn về đủ mà PX4 không trả lời gì, cắm lại dây rồi rút nguồn Pixhawk
+   cấp lại.
+3. QGC mở từ lúc lỗi có thể kẹt ở bước tải: tắt hẳn rồi mở lại QGC.
+
+## Đo quỹ đạo trôi (drift) trực tiếp trên PC
+
+`tools/drift_viewer.py` chạy trên laptop, vẽ trực tiếp quỹ đạo của UAV theo
+x = Bắc, y = Đông, z = Lên (= −Down của PX4). Gốc (0,0,0) là gốc EKF local:
+vị trí lúc EKF khởi tạo sau khi Pixhawk boot. Dữ liệu là `LOCAL_POSITION_NED`
+(~30 Hz) do router trên Pi chuyển tới `PC_IP:14560` (endpoint `drift` trong
+`config/mavlink-router.conf`). Tool chỉ nghe, không gửi gì cho Pixhawk.
+
+```bash
+pip install -r tools/requirements.txt          # matplotlib, pymavlink
+python3 tools/drift_viewer.py                   # chạy sau khi đã bật run_hardware_router.sh
+python3 tools/drift_viewer.py --replay session-logs/drift-YYYYMMDDTHHMMSS.csv --save drift.png
+```
+
+- Mỗi mẫu được ghi vào `session-logs/drift-*.csv` để xem lại sau chuyến bay.
+- Pixhawk reboot (`time_boot_ms` lùi lại) nghĩa là có gốc mới, nên quỹ đạo vẽ lại từ đầu.
+- Hai mẫu liên tiếp lệch nhau > `--jump-m` (mặc định 0.5 m) được đánh dấu là
+  EKF reset (dấu ×, vạch tím). Ví dụ: lúc console gửi `SET_GPS_GLOBAL_ORIGIN`,
+  hoặc lúc optical flow mất rồi có lại. Cú nhảy đó không phải chuyển động thật.
+- Firewall trên PC phải mở UDP 14560 (giống 14550 cho QGC).
+- Nếu báo "mplot3d unavailable", tool vẫn chạy nhưng hiện góc nhìn từ trên xuống.
+  Lỗi này do matplotlib của hệ thống xung đột với bản cài bằng pip. Cách sửa:
+  dùng venv, hoặc `sudo apt remove python3-matplotlib`.

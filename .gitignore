@@ -17,3 +17,6 @@ session-logs/
 .vscode/
 .idea/
 .DS_Store
+
+# Perception scans pulled from the Pi (tools/pull_perception_results.py)
+results_perception/

@@ -6,7 +6,7 @@ import time
 from dataclasses import asdict
 from flight_policy import ArrivalMonitor, FlightPolicy
 from validation import number
-from pixhawk import Pixhawk, json_safe
+from pixhawk import Pixhawk, json_safe, read_param
 
 
 class OffboardControl(Pixhawk):
@@ -69,7 +69,7 @@ class OffboardControl(Pixhawk):
             raise
 
     def _subscribe_offboard(self, system_id):
-        self.nav_min_ltr_alt = number(self.param.get_param_float('NAV_MIN_LTR_ALT'),
+        self.nav_min_ltr_alt = number(read_param(self.param.get_param_float, 'NAV_MIN_LTR_ALT'),
                                      'NAV_MIN_LTR_ALT', -1, 10000)
         from mavsdk.plugins.mavlink_direct import MavlinkDirect
         from mavsdk.plugins.offboard import Offboard, PositionNedYaw
@@ -127,8 +127,34 @@ class OffboardControl(Pixhawk):
             self.telemetry.subscribe_attitude_euler(attitude),
             self.telemetry.subscribe_flight_mode(mode),
         ])
-        self.telemetry.set_rate_position_velocity_ned(5.0)
-        self.telemetry.set_rate_attitude_euler(5.0)
+        if self.shared_link:
+            self.restore_default_stream_rates()
+        else:
+            self.telemetry.set_rate_position_velocity_ned(5.0)
+            self.telemetry.set_rate_attitude_euler(5.0)
+
+    # MAVLink ids of the streams this console and perception read on a shared link.
+    SHARED_STREAMS = {'SYS_STATUS': 1, 'ATTITUDE': 30, 'LOCAL_POSITION_NED': 32,
+                      'VFR_HUD': 74, 'DISTANCE_SENSOR': 132, 'EXTENDED_SYS_STATE': 245}
+
+    def restore_default_stream_rates(self):
+        """MAV_CMD_SET_MESSAGE_INTERVAL(msg, 0 = PX4 default) for each shared stream.
+
+        Undoes any earlier lowering on this link (an older console sets 5 Hz and
+        PX4 keeps it until reboot). Read-only for flight: changes telemetry rates only.
+        """
+        from mavsdk.plugins.mavlink_direct import MavlinkMessage
+        system_id = self.drone.get_system_id()
+        for name, msgid in self.SHARED_STREAMS.items():
+            self.mavlink_direct.send_message(MavlinkMessage(
+                message_name='COMMAND_LONG', system_id=0, component_id=0,
+                target_system_id=system_id, target_component_id=1,
+                fields_json=json.dumps({
+                    'target_system': system_id, 'target_component': 1,
+                    'command': 511, 'confirmation': 0, 'param1': float(msgid), 'param2': 0.0,
+                    'param3': 0.0, 'param4': 0.0, 'param5': 0.0, 'param6': 0.0, 'param7': 0.0})))
+        logging.getLogger(__name__).info('Shared link: requested PX4 default rates for %s',
+                                         ', '.join(self.SHARED_STREAMS))
 
     @staticmethod
     def validate_origin(lat_deg, lon_deg, alt_m):

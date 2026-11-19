@@ -1,0 +1,25 @@
+# =============================================================================================
+# Model NCNN cua s2 segment: YOLO26n-seg mat tren tren ROI cat tu anh 960 x 544 (chi 0.7 m; 2026-11-16,
+# segmentation/configs/roi_seg_07_960x544.yaml, seed 1 tot nhat tren val). FP32. Test e2e: co mask 97.1 %, IoU mat tren
+# hop 0.925, nap chai 0.77. Khong dung INT8 (nap chai IoU con 0.51, Pi 4 khong nhanh hon).
+# Phai di cung s2_segment.roi_image_px: [960, 544] (configs/stages/s2_segment.yaml). Model cu (ROI anh 1920):
+#   models/seg_yolo26n_roi07_ft1109_s1_ncnn_fp16 + --set "s2_segment.roi_image_px=[0, 0]"
+# =============================================================================================
+
+# --- File model ---
+dir: models/seg_yolo26n_roi960_s1_ncnn_fp32
+param_file: model.ncnn.param
+bin_file: model.ncnn.bin
+classes: [box_top, bottle_top] # class id = vi tri, dung thu tu luc train segment
+
+# --- Pixel dau vao model (tien xu ly) ---
+input_px: 320 # input model VUONG 320 x 320 px (= imgsz luc train segment). ROI vuong quanh bbox
+# (stages/s2_segment.yaml: roi_scale) duoc resize thang ve 320 x 320 (khong dem). Mask ra o 320 x 320
+# (proto 80 x 80 phong to) roi doi ve kich thuoc ROI tren anh goc.
+interpolation: linear # cach resize ROI ve input_px: linear (giong luc train) | area
+# Chuan hoa co dinh trong code: RGB uint8 -> float32 / 255, thu tu CHW.
+
+# --- Chay NCNN ---
+num_threads: 2 # = so nhan cua chuong trinh (configs/run/*.yaml: cpu.cores)
+use_vulkan: false
+use_fp16_storage: false # chi LUU fp16 (A72 khong tinh fp16; phep tinh fp16 luon tat). Do bat / tat: uavp_bench_model

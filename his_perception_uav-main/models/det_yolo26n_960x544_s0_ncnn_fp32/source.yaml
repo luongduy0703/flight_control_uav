@@ -1,0 +1,11 @@
+# Model det_yolo26n_960x544_s0_ncnn_fp32 (uav_perception_pi).
+source_run: detection/runs/20261116-122849_yolo26n_960x544_b_full_s0 # seed tot nhat tren val trong 3 seed
+train_cfg: detection/configs/finetune_960x544.yaml # tu COCO, 2 pha, imgsz 960 tren anh 960 x 544
+data_cfg: detection/configs/data/uav_v3_960x544.yaml # data/images_960×544 (0.7 m + 1.3 m): 85 train / 18 val / 18 test
+input_px: [960, 544]
+classes: [box, bottle]
+date: "2026-11-16"
+export: detection/configs/export/ncnn_fp32_960x544.yaml (ultralytics -> NCNN fp32), verify_export dat
+metrics: # recall o IoU 0.5, conf 0.25 (eval/full_960x544_v3.yaml)
+  val:  { mAP50: 99.6, mAP50-95: 81.2, recall: 97.2, recall_0.7m: 96.8, recall_1.3m: 97.7 } # = PyTorch
+  test: { mAP50: 96.7, mAP50-95: 82.0, recall: 97.0, recall_0.7m: 100.0, recall_1.3m: 93.6 } # = PyTorch

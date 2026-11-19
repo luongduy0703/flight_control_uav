@@ -5,7 +5,7 @@
 ```text
 Máy điều khiển ── SSH (lệnh gõ trong terminal) ──> Pi/console.py
                                                    │ UART TX/RX/GND, 921600
-                                                   └──> Pixhawk TELEM2, SYS_HITL=1
+                                                   └──> Pixhawk TELEM1, SYS_HITL=1
 Máy mô phỏng ── USB ──> Pixhawk; máy mô phỏng chạy Gazebo Classic X500
 ```
 
@@ -14,7 +14,7 @@ Lệnh `takeoff`, `fly x y`, `land` được nhập trong terminal Pi qua SSH. S
 UDP API để PC gửi trực tiếp các lệnh đó đến Pi. Nếu cần QGroundControl trên
 máy mô phỏng, Gazebo chuyển MAVLink tới UDP loopback 14550 trên chính máy đó.
 Không mở console PC trên UDP 14540 cùng lúc với console Pi: chỉ một chương
-trình được ra lệnh bay. Không chạy thêm MAVLink router trên UART TELEM2 cùng
+trình được ra lệnh bay. Không chạy thêm MAVLink router trên UART TELEM1 cùng
 lúc với console Pi; chúng sẽ tranh cùng một cổng.
 
 Bộ tham số X500 HITL nằm trên Pixhawk, không nạp từ Pi khi chạy console.
@@ -48,11 +48,11 @@ MAVSDK được ghim `4.0.6`. Chỉ khi wheel ARM64 có lỗi native C++ runtime
 xem `docs/FLIGHT_STATES.md#native-mavsdk-trên-pi` ở repository nguồn hoặc
 `tools/build_mavsdk_pi.sh` trong gói; không build nếu import/chạy đã đạt.
 
-## Kiểm tra UART TELEM2 trên Pi
+## Kiểm tra UART TELEM1 trên Pi
 
 Trên Pi, kiểm tra cổng và quyền. Raspberry Pi 5 (kernel `rpi-2712`) thường
 cho `/dev/serial0` trỏ tới UART10 ở **đầu debug 3 chân**, không phải
-GPIO14/15 ở header 40 chân. Nếu dây TELEM2 nối GPIO14/15 (pin vật lý
+GPIO14/15 ở header 40 chân. Nếu dây TELEM1 nối GPIO14/15 (pin vật lý
 8/10), cần UART0 (`/dev/ttyAMA0`) được bật và không bị serial console giữ.
 Chỉ chọn thiết bị sau khi đối chiếu dây thực tế:
 
@@ -73,9 +73,9 @@ Nếu GPIO14/15 chưa có chức năng UART0, xem `dtoverlay -h uart0-pi5`, thê
 `dtoverlay=uart0-pi5` vào `/boot/firmware/config.txt` rồi reboot và kiểm tra
 lại `pinctrl get 14 15`. Xem tài liệu UART chính thức của Raspberry Pi
 trước khi đổi config. Nếu thiếu quyền cổng, thêm user `pi` vào nhóm `dialout`,
-đăng xuất và đăng nhập lại. TELEM2 dùng TX↔RX, RX↔TX, GND, logic level phù
-hợp; tham số PX4 hiện dự kiến `MAV_1_CONFIG=102`, `MAV_1_MODE=2`,
-`MAV_1_FLOW_CTRL=0`, `SER_TEL2_BAUD=921600`.
+đăng xuất và đăng nhập lại. TELEM1 dùng TX↔RX, RX↔TX, GND, logic level phù
+hợp; tham số PX4 hiện dự kiến `MAV_0_CONFIG=101`, `MAV_0_MODE=2`,
+`MAV_0_FLOW_CTRL=0`, `SER_TEL1_BAUD=921600`, `MAV_1_CONFIG=0` (TX của TELEM2 trên bo này đã hỏng).
 
 ## Bắt đầu HITL
 
@@ -91,7 +91,7 @@ hợp; tham số PX4 hiện dự kiến `MAV_1_CONFIG=102`, `MAV_1_MODE=2`,
 2. Với `COM_RC_IN_MODE=4` và console Pi là MAVSDK companion, mở
    QGroundControl **sau** Gazebo trên máy mô phỏng qua UDP 14550 để cung
    cấp kết nối ground station/giám sát. QGC không được chiếm USB mà Gazebo
-   giữ. Pi console qua TELEM2 chưa được thử bay end to end trên phần cứng
+   giữ. Pi console qua TELEM1 chưa được thử bay end to end trên phần cứng
    hiện tại.
 
 3. Từ máy điều khiển, SSH vào Pi; tại thư mục `~/uav/releases/2026-10-26/controller`, kiểm tra chỉ đọc. Ví dụ dưới đây dùng `/dev/ttyAMA0` **chỉ khi dây ở GPIO14/15 và UART0 đã được xác minh**; nếu dây ở đầu debug 3 chân, dùng thiết bị đã xác minh của đầu đó:
@@ -103,7 +103,7 @@ hợp; tham số PX4 hiện dự kiến `MAV_1_CONFIG=102`, `MAV_1_MODE=2`,
 
    Cần thấy `SYS_HITL=1`, `connected=true`, `armed=false`, `ON_GROUND`,
    `health_all_ok=true`, telemetry mới và không có `flight_termination`.
-   Nếu thiếu heartbeat, kiểm tra UART/baud/wiring/truyền MAVLink TELEM2;
+   Nếu thiếu heartbeat, kiểm tra UART/baud/wiring/truyền MAVLink TELEM1;
    không ARM để dò lỗi.
 
 4. Khi các điều kiện trên đạt và model Gazebo đứng yên hợp lý, mở phiên
@@ -130,4 +130,4 @@ Không dùng `disarm` thay `land`: lệnh đó dừng motor cưỡng bức cả 
 Nếu SSH/console rớt trong Offboard, PX4 thực hiện failsafe theo các tham số
 đang lưu trên bo; theo dõi tới DISARM/ON_GROUND trước khi dừng Gazebo. Nếu
 Pi không thấy dữ liệu dù máy mô phỏng bay bằng PC console trước đây, đó là
-vấn đề đường TELEM2/Pi riêng, không chứng minh thuật toán đã hỏng.
+vấn đề đường TELEM1/Pi riêng, không chứng minh thuật toán đã hỏng.

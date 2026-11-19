@@ -1,0 +1,36 @@
+# =============================================================================================
+# Khoa + bam vat (sau s3 chon vat, s4 lan dau co tam 3D) - chi uavp_real_time. Moi khung camera (30 Hz):
+#   1. Du doan tu tu the FC (EKF Pixhawk qua MAVLink, run/real_time.yaml: sources.mavlink):
+#      co vi tri (LOCAL_POSITION_NED / rangefinder): p_C(t) = T_CW(t) p_W chieu len anh -> tam ROI du doan;
+#      chi co goc quay: homography H = K R(t <- t-1) K^-1 doi tam ROI va mask cu.
+#   2. Sua trong cua so quanh ROI (anh xam 1/2): optical flow LK (forward-backward, median, affine doi mask);
+#      it diem goc (mat vat tron) -> template matching NCC.
+#   3. Kalman (u, v, vu, vv) gop du doan (dau vao dieu khien) + do -> tam ROI.
+#   4. Segment (s2) chi khi co vong quet LiDAR moi (10 Hz) tren ROI Kalman; giua 2 lan: mask cu da doi.
+#   5. s4 gop LiDAR quanh cac khung co mask, bu chuyen dong bang tu the FC -> mat top, tam, 3 truc; p_W.
+# Code: src/tracking/ (world_pose, roi_flow, roi_kalman, locked_tracker). Ghi de: --set lock_track.max_duration_s=5
+# =============================================================================================
+calib_T_BC: configs/calib/T_BC.yaml # camera -> than FC (R_BC, t_BC). CHUA HIEU CHUAN: xem ghi chu trong file
+
+# --- Cua so tim + optical flow (anh xam thu 1/2) ---
+search_scale: 2.0 # canh cua so = 2 x canh ROI (bbox luc khoa), quanh tam du doan
+flow_max_corners: 40 # so diem goc toi da trong mask (goodFeaturesToTrack)
+flow_quality: 0.01 # nguong chat luong goc (ti le so voi goc manh nhat)
+flow_min_distance_px: 4 # khoang cach toi thieu giua 2 goc (px anh 1/2)
+flow_win_px: 15 # cua so LK (px anh 1/2)
+flow_levels: 2 # so tang kim tu thap LK
+flow_fb_max_px: 1.0 # loi forward-backward > 1 px (anh 1/2) -> bo diem
+flow_min_points: 6 # >= 6 diem tot: median do dich + affine doi mask; it hon -> NCC
+affine_ransac_px: 2.0 # nguong RANSAC khi uoc luong affine (px anh goc)
+ncc_min: 0.6 # NCC < 0.6 -> khong tin (khung nay chi dung du doan tu the / Kalman)
+
+# --- Kalman tam ROI (u, v, vu, vv) ---
+kf_accel_px_s2: 300 # nhieu gia toc (px/s^2): UAV hover + tu the tre; lon hon -> tin do hon
+kf_init_vel_px_s: 50 # do lech chuan van toc ban dau (px/s)
+kf_meas_px: 3 # do lech chuan do (flow / NCC / tam mask segment), px
+
+# --- Thoi gian bam ---
+max_duration_s: 3.0 # bam toi da 3 s sau khi khoa (ket qua cuoi lay luc dung)
+min_segments: 5 # it nhat 5 lan segment (5 vong LiDAR) truoc khi dung som
+stop_when_converged: true # s4 ok + do duoc nghieng 2 huong + khong 2 mat tuong dong -> dung som
+warped_masks_for_lidar: false # true: loc LiDAR ca bang mask da doi (khung khong segment) -> nhieu diem hon, mask kem chinh xac

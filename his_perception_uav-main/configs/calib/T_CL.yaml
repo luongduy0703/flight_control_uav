@@ -1,0 +1,37 @@
+# Extrinsic LiDAR (LD06) -> camera - ban chinh (version 4: GIAI LAI R, t KHONG dung hieu chinh tam; 2026-11-09).
+# Ban sao: v1 _backup/calib_v1_20261109/, v2 (co hieu chinh) _backup/calib_T_CL_v2_20261109/,
+# v3 (R, t v2, bo hieu chinh) _backup/calib_T_CL_v3_20261109/ (thu muc object_detection/).
+# Hieu chuan lai (thao lap rig, doi gia do) -> ghi bo so moi, tang `version`, cap nhat `date`.
+#
+#   p_C_m = R_CL @ p_L_m + t_CL_m
+#   He L (LiDAR chuan): x truoc, y trai, z len; mat phang quet z = 0; goc tang nguoc chieu kim dong ho (nhin tu tren).
+#   He C (camera OpenCV cua ANH NHAN DUOC, da lat 180 do tren Pi): x phai, y xuong, z truoc.
+version: 5 # v5: chi doi range_scale (1.000013); R, t nhu v4
+date: "2026-11-09" # ngay nhan bo so (nguoi dung cung cap: R_cam_lidar, t_cam_lidar, giai voi range_scale 1, offset 0)
+source: user-provided (pin_extrinsic, video_60_1 / video_70_1 / video_80_1)
+intrinsics: K_1920x1080.yaml # giai voi CHINH K nay (fx 823.313 px)
+
+R_CL:
+  - [-0.06038498967803372, -0.9978448655145832, -0.02567639748421244]
+  - [-0.01991511809752847, 0.02692259221057069, -0.9994391237588335]
+  - [0.99797647321605, -0.05983977268378305, -0.021497918792476558]
+t_CL_m: [0.011905673022094776, 0.038799999999999994, 0.041832796128564165] # y GHIM bang thuoc (38.8 mm); x, z giai ra
+
+# Doi goc tho LD06 sang he L (giong luc hieu chuan).
+lidar_angle:
+  clockwise: true # LD06 tang goc theo chieu kim dong ho -> doi dau
+  offset_deg: 0.0 # cong sau khi doi dau, de 0 do trung truc x "phia truoc" cua LiDAR
+
+# Hieu chinh tam LD06: r_m' = range_scale * r_m + range_offset_m. Version 4: KHONG hieu chinh (1, 0); R, t giai voi
+# dung tam tho. So voi ArUco (3 phien 2026-11-09, d 0.54-0.59 m): sai so d TB -19 mm (v2 co hieu chinh: -33 mm).
+# Version 5 (2026-11-16): range_scale 1.000013 theo lan hieu chinh truoc (nguoi dung chon, ket qua tot nhat).
+# Ban v4 (1.0, 0): _backup/calib_T_CL_v4_20261116/. R, t giu nguyen.
+range_correction:
+  range_scale: 1.000013
+  range_offset_m: 0.0
+
+error:
+  rms_mm: 6.531070481152938 # khoang cach diem LiDAR - mat phang bia (v2 co hieu chinh: 4.21)
+  observations: 14 # 60_obs_000,002-005; 70_obs_000-003; 80_obs_000-004 (doan giu yen >= 20 s)
+  square_mm: 14.714
+solved_with_fx_px: 823.3130891648331 # = fx cua K_1920x1080.yaml (version 2)

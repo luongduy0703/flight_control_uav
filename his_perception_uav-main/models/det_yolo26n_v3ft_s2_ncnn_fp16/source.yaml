@@ -1,0 +1,5 @@
+weights: detection/runs/20261109-170127_yolo26n_v3ft_ft_s2/weights/best.pt
+data: uav_v3 (uav_v2 + 7 anh 0.7 m ngay 09/11, luon vao train); val/test = uav_v2. Seed 2 = tot nhat tren val trong 3 seed
+init: fine-tune tu detection/runs/20261105-193248_yolo26n_b_full_s2/weights/best.pt (configs/finetune_v3.yaml, 60 epoch, lr0 2e-4)
+export: detection/runs/20261109-170127_yolo26n_v3ft_ft_s2/export/ncnn_fp16 (fbrt_roi.export.export_ncnn, 2026-11-09, input 640, fp16, one-to-many)
+verify_export: DAT - val uav_v2: mAP50 pytorch 0.9607 / ncnn 0.9610, mAP50-95 0.7511 / 0.7519, recall >=32 px 0.972 / 0.972

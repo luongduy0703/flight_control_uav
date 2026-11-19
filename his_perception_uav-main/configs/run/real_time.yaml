@@ -1,0 +1,117 @@
+# =============================================================================================
+# CHUONG TRINH DAY DU KHI BAY (uavp_real_time): camera + LiDAR LD06 + Pixhawk (qua uavp_fc_bridge).
+#   Bat dau khi: MAY TINH ra lenh: gcs_command.py start (qua Pixhawk) hoac SPACE tren remote_viewer (muc start).
+#   start.require_hover: true -> them dieu kien Pi tu nhan dang hover (khi bay that).
+#   s1 -> s3 (D camera - san = do cao optical flow) -> khoa vat (p_W) -> bam -> s4 cuoi. gcs_command.py stop -> dung.
+#   cd ~/uav_perception_pi
+#   ./build/uavp_real_time --cfg configs/run/real_time.yaml --set display.show=false
+# Chi do thoi gian / phan cung / sai so (4 stage, khong Pixhawk, bam SPACE): configs/run/real_time_perception.yaml.
+# KHONG chay chuong trinh khac giu camera / cong LD06 cung luc (vd uavp_real_time_perception, uavp_sensor_check).
+# Duong dan tinh tu thu muc goc uav_perception_pi/. Code khong co gia tri mac dinh: thieu khoa -> loi.
+# =============================================================================================
+
+start: # dieu kien bat dau (sau khi nhan lenh bat dau tu may tinh)
+  require_hover: false # false: CHI can lenh may tinh (test tren ban / bay tay). true: lenh + hover (cac dieu kien duoi)
+  accept_viewer_key: true # SPACE / s tren remote_viewer cung la lenh bat dau (ngoai gcs_command.py start qua Pixhawk)
+  # --- dieu kien hover (chi bat buoc khi require_hover: true; luon duoc ghi vao fc_events.jsonl) ---
+  modes: [5, 16] # custom_mode ArduCopter duoc phep: 5 LOITER, 16 POSHOLD (them 2 ALT_HOLD, 4 GUIDED neu can); [] = moi che do
+  max_speed_m_s: 0.15 # van toc ngang (LOCAL_POSITION_NED vx, vy; khong co thi VFR_HUD groundspeed) <= 0.15 m/s
+  max_vspeed_m_s: 0.10 # van toc doc <= 0.10 m/s
+  max_height_change_m: 0.05 # do cao (optical flow ground_distance / rangefinder) dao dong <= 5 cm ...
+  hover_window_s: 1.0 # ... trong 1 s gan nhat
+  min_height_m: 0.3 # do cao toi thieu (duoi muc nay cam bien / camera khong tin)
+  max_msg_age_s: 1.5 # tin FC (HEARTBEAT, EXTENDED_SYS_STATE, van toc) cu hon -> coi nhu khong co
+  status_period_s: 2.0 # log dieu kien con thieu moi 2 s
+
+distance: # khoang cach camera -> san cho s3 (doi kich thuoc mask px -> mm, loai vat qua to cho tay gap 8 cm)
+  source: fc # fc: do cao optical flow (OPTICAL_FLOW.ground_distance; khong co thi rangefinder) luc bat dau
+  # x cos(roll) cos(pitch) + camera_offset_m | fixed: dung fixed_m. Khoang cach THAT toi mat top do o s4 (LiDAR)
+  fixed_m: 1.0 # dung khi source: fixed, hoac khi FC khong co do cao; uavp_real_time_perception luon dung gia tri nay
+  camera_offset_m: -0.05 # camera cao hon (+) / thap hon (-) cam bien do cao (m). Do 2026-11-16: ToF cao hon camera
+  # 5 cm -> camera gan san hon 5 cm: D = h_ToF x cos(roll) cos(pitch) - 0.05
+
+max_frames: 100 # het 100 khung ma chua co nhom xong -> chon trong cac track OK hien co (khong co -> dung, khong fusion)
+calib_K: configs/calib/K_1920x1080.yaml # K + meo; camera mo theo muc sensor_mode (1920x1080, lat 180, net 1.25)
+runs_root: runs # moi lan chay: runs/<ngay-gio>_real_time/
+
+cpu: # ca chuong trinh (luong chinh s1-s4, NCNN, camera, LD06, log, theo doi phan cung) chi chay tren cac nhan nay
+  cores: [2, 3] # Pi 4 / Pi 5 co nhan 0-3: de nhan 0, 1 cho he dieu hanh / chuong trinh khac (FC, ROS...).
+  # NCNN s1, s2 dung 2 luong (configs/models/*: num_threads = so nhan). [] = khong gioi han (4 nhan)
+
+stages: # moi stage mot file (stage co model: file stage tro toi file model qua `model_cfg`)
+  s1_detect: configs/stages/s1_detect.yaml
+  s2_segment: configs/stages/s2_segment.yaml
+  s3_select: configs/stages/s3_select.yaml
+  s4_fusion: configs/stages/s4_fusion.yaml
+  lock_track: configs/stages/lock_track.yaml # khoa + bam vat sau s3 (tu the FC, optical flow, Kalman, segment theo LiDAR)
+
+sources:
+  camera_buffer_count: 4 # so bo dem anh cua libcamera (anh 1920x1080 RGB ~6 MB / bo dem)
+  sensor_bit_depth: 10 # do sau bit che do cam bien (IMX708 2304x1296: 10 bit)
+  connect_timeout_s: 5.0 # cho vong quet LD06 dau tien qua 5 s -> loi
+  frame_timeout_s: 5.0 # cho khung camera qua 5 s -> loi
+  lens_position_tol: 0.02 # |LensPosition khung dau - lens_position file K| lon hon -> loi
+  clock_skew_max_s: 0.5 # khung dau: luc nhan - SensorTimestamp (da doi ve monotonic) ngoai [0, 0.5] s -> loi
+  lidar_port: /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_base_core-if00-port0 # LD06
+  # (CP2102) theo by-id: ten /dev/ttyUSBx doi theo thu tu cam USB. Kiem tra: ls -l /dev/serial/by-id/
+  lidar_baudrate: 230400 # LD06: 230400 8N1
+  lidar_buffer_scans: 600 # so vong quet gan nhat giu trong bo nho (~60 s): s4 dung LiDAR quanh cac khung co mask cua phien,
+  # bo dem phai phu ca phien (Pi 4 cham hon Pi 5); thieu -> log canh bao
+  lidar_extra_latency_ms: 0.0 # tre them tu luc LD06 do diem cuoi goi toi luc nhan byte cuoi (USB CP210x, xu ly LD06),
+  # NGOAI thoi gian truyen goi 47 byte (tinh tu lidar_baudrate). Chua do: 0
+  scan_timeout_s: 1.0 # s4 cho LiDAR phu toi khung co mask cuoi + lidar_window_s, qua 1 s -> dung LiDAR dang co
+  mavlink: # tu the UAV tu EKF Pixhawk (chi doc). Can cho: p_W (toa do the gioi cua vat), du doan ROI, bu chuyen dong s4
+    enabled: true # uavp_real_time can Pixhawk (lenh bat dau, tu the, do cao); perception khong dung muc nay
+    source: shm # shm: doc RAM do uavp_fc_bridge (dich vu systemd) ghi -> nhieu chuong trinh dung chung, cong serial chi
+    # bridge mo | serial: chuong trinh nay tu mo `port` (bridge phai tat: systemctl stop uavp-fc-bridge)
+    shm_name: /uavp_fc # file RAM /dev/shm/uavp_fc (bridge ghi, perception doc)
+    shm_poll_ms: 5 # doc tin moi tu RAM moi 5 ms
+    companion_sysid: 1 # Pi = may tinh dong hanh: cung sysid voi Pixhawk (SYSID_THISMAV, mac dinh 1)
+    companion_compid: 191 # MAV_COMP_ID_ONBOARD_COMPUTER: may tinh gui lenh toi (sysid, compid) nay qua Pixhawk
+    command_id: 31010 # MAV_CMD_USER_1: COMMAND_LONG param1 = 1 bat dau, 0 dung (tools/gcs_command.py start / stop)
+    link: udp # uavp_fc_bridge nhan MAVLink qua: udp = mavlink-routerd (router GIU UART TELEM2, dieu khien bay qua 14550;
+    # them endpoint [UdpEndpoint uavp] Mode=Normal Address=127.0.0.1 Port=14551 trong /etc/mavlink-router/main.conf)
+    # | serial = bridge mo thang `port` (CHI khi khong co mavlink-routerd: 2 chuong trinh khong duoc mo chung 1 UART)
+    udp_address: 127.0.0.1 # bridge lang nghe dia chi nay (= Address cua endpoint uavp trong main.conf)
+    udp_port: 14551 # = Port cua endpoint uavp; KHAC 14550 (cong cua tram mat dat)
+    port: /dev/ttyAMA0 # TELEM2 Pixhawk -> GPIO 14/15 (chan 8 TX, 10 RX, 6 GND). Pi 4: can dtoverlay=disable-bt de
+    # GPIO 14/15 la UART PL011 = /dev/ttyAMA0 (mac dinh la mini UART ttyS0, toc do lech theo xung CPU). USB: /dev/ttyACM0
+    baudrate: 921600 # = SERIALx_BAUD cua ArduPilot (921 = 921600)
+    latency_ms: 0.0 # tre them ngoai tre truyen nho nhat da tru (time_boot_ms FC -> dong ho Pi). Chua do: 0
+    max_age_s: 0.2 # mau tu the cach thoi diem khung > 0.2 s -> coi nhu khong co
+    buffer_samples: 1024 # so mau ATTITUDE giu lai (~20 s o 50 Hz), luy thua 2
+    use_local_position: true # dung x, y cua LOCAL_POSITION_NED (EKF co nguon vi tri: GPS / optical flow / VIO)
+    use_rangefinder: true # dung rangefinder huong xuong (DISTANCE_SENSOR / RANGEFINDER) lam do cao
+
+fc_bridge: # uavp_fc_bridge: chay nen (systemd) tu luc Pi khoi dong, doc MAVLink (sources.mavlink.port) -> RAM
+  cores: [1] # nhan CPU cua bridge (perception dung cpu.cores [2, 3]); [] = khong gioi han
+  shm_capacity: 4096 # so tin giu trong RAM (~30 s o ~130 tin/s), luy thua 2, ~300 KB
+  status_period_s: 5.0 # in trang thai (tin/s, loi CRC, EKF da co vi tri chua) moi 5 s (journalctl -u uavp-fc-bridge)
+  reopen_wait_s: 2.0 # cong loi / chua co (USB Pixhawk chua khoi dong) -> thu mo lai sau 2 s
+  heartbeat_period_s: 1.0 # gui HEARTBEAT cua Pi ve Pixhawk moi 1 s -> Pixhawk chuyen lenh cua may tinh toi Pi
+
+remote: # xem + dieu khien tu MAY TINH qua Wi-Fi / LAN: python tools/remote_viewer.py --host <ip-pi> --port 8100
+  enabled: true # true: cho may tinh bam SPACE de bat dau (thay cho phim s tren terminal / cua so HDMI)
+  port: 8100 # cong TCP tren Pi
+  preview_width_px: 960 # anh gui ve thu nho (1920 -> 960); JPEG ma hoa o luong rieng
+  jpeg_quality: 70
+  wait_fps: 15 # luc CHO SPACE (can vat theo anh + duong LiDAR): 15 anh / s cho muot (chua do thoi gian nen khong anh huong)
+  max_fps: 10 # LUC CHAY: toi da 10 anh / s gui ve (thu nho + JPEG ton CPU: ~3-5 ms / anh tren Pi 5, tinh trong 2 nhan).
+  # Do do tre / thoi gian "sach": dat 2-5 hoac tat (enabled: false, dung phim s tren terminal)
+
+display: # cua so hien thi (anh 1920x1080 thu nho vao cua so)
+  show: false # true: cua so xem truoc (HDMI / VNC; khong co man hinh -> tu tat), bam s hoac SPACE de quet. false: qua SSH khong man hinh, bam s
+  # tren terminal (khong can Enter), q de thoat / dung som; chi ghi runs/. Do thoi gian: dung false
+  window_width_px: 1600
+  window_height_px: 900
+
+monitor: # theo doi phan cung (so sanh Pi 4 / Pi 5): hw_usage.csv + result.json (hw_usage, device)
+  enabled: true
+  period_s: 0.5 # lay mau CPU (tong, tung nhan, tien trinh), RAM, nhiet do, tan so CPU moi 0.5 s
+
+aruco: # kiem tra sai so s4 bang ArUco dan tren mat tren vat (in: print/aruco_4x4_id0_vien_trang_A4.pdf)
+  check_aruco: true # true: vat CO dan ArUco -> log + result.json: do tu ArUco, uoc tinh s4, sai so. false: bo qua
+  dictionary: DICT_4X4_50 # tu dien cv::aruco cua marker da in
+  marker_id: 0
+  side_mm: 36.4 # canh ngoai VIEN DEN (khong tinh vien trang). Mau 40 mm in ra 91 % -> 36.4 mm. Sai 1 mm ~ sai 2.7 %
+  # khoang cach ArUco. Dan marker canh duong quet LiDAR (o den / trang lam LD06 do lech), phang tren mat tren.
