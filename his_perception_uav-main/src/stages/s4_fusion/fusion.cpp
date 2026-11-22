@@ -226,12 +226,204 @@ void Fusion::fit(std::span<const MaskFrame> frames, FusionResult& r) {
     r.yaw_deg = ts.yaw_deg;
 }
 
-FusionResult Fusion::operator()(std::span<const MaskFrame> frames, std::span<const Scan> scans) {
+// --- method world --------------------------------------------------------------------------------------------------
+bool Fusion::fuse_world(std::span<const MaskFrame> frames, std::span<const Scan> scans,
+                        std::span<const CamPoseSample> poses, FusionResult& r) {
+    const auto max_gap_ns = static_cast<int64_t>(cfg_.world.pose_max_gap_s * 1e9);
+    frame_pose_.assign(infos_.size(), CamPose{});
+    frame_ok_.assign(infos_.size(), 0);
+    for (std::size_t k = 0; k < infos_.size(); ++k)
+        frame_ok_[k] = interpolate_pose(poses, infos_[k].t_ns, max_gap_ns, frame_pose_[k]) &&
+                       frame_pose_[k].has_position ? 1 : 0;
+    if (frame_ok_.back() == 0) return false;  // khung tham chieu khong co tu the co vi tri -> cach image
+    r.pose_compensated = true;
+    r.mode = PlaneMode::kHeightOnly;  // chua co mat phang
+    collect_world(frames, scans, poses, r);
+    r.n_points = static_cast<int>(r.points_C_mm.size());
+    r.inliers.assign(r.points_C_mm.size(), 0);
+    if (!r.points_t_ns.empty()) {
+        const auto [lo, hi] = std::minmax_element(r.points_t_ns.begin(), r.points_t_ns.end());
+        r.t_lidar_first_ns = *lo;
+        r.t_lidar_last_ns = *hi;
+    }
+    if (r.n_points >= cfg_.min_pts) solve_world(frames, r);
+    return true;
+}
+
+// Deskew (tu the luc t_i) -> he the gioi -> camera cua khung co mask gan nhat -> chieu -> giu diem trong mask da co.
+void Fusion::collect_world(std::span<const MaskFrame> frames, std::span<const Scan> scans,
+                           std::span<const CamPoseSample> poses, FusionResult& r) {
+    const auto max_gap_ns = static_cast<int64_t>(cfg_.world.pose_max_gap_s * 1e9);
+    const int64_t t_ref = infos_.back().t_ns;
+    int64_t t_first = t_ref;
+    for (const FrameInfo& f : infos_) t_first = std::min(t_first, f.t_ns);
+    const int64_t t_lo = std::max(t_ref - static_cast<int64_t>(cfg_.world.effective_max_window_s() * 1e9),
+                                  t_first - static_cast<int64_t>(cfg_.lidar_window_s * 1e9));  // khong dung LiDAR truoc khung dau
+    const int64_t t_hi = t_ref + static_cast<int64_t>(cfg_.lidar_window_s * 1e9);
+    points_W_.clear();
+    std::vector<cv::Point3f> in_frame;  // diem trong camera khung co mask, de chieu ca vong mot lan
+    std::vector<std::size_t> frame_of, src;
+    std::vector<cv::Vec3d> cand_W;
+    for (std::size_t si = 0; si < scans.size(); ++si) {
+        scan_points_.clear();
+        scan_t_.clear();
+        scan_to_camera_mm(scans[si], cfg_.extrinsics, cfg_, scan_points_, scan_t_);
+        in_frame.clear();
+        frame_of.clear();
+        src.clear();
+        cand_W.clear();
+        for (std::size_t i = 0; i < scan_points_.size(); ++i) {
+            const int64_t t = scan_t_[i];
+            if (t < t_lo || t > t_hi) continue;  // ngoai cua so truot
+            CamPose P;
+            if (!interpolate_pose(poses, t, max_gap_ns, P) || !P.has_position) {
+                ++r.n_pose_missing;
+                continue;
+            }
+            const cv::Point3f& p = scan_points_[i];
+            const cv::Vec3d pW = P.R_WC * cv::Vec3d(p.x, p.y, p.z) + P.t_WC_mm;  // p_W = T_WC(t_i) T_CL p_L
+            const std::size_t k = nearest_frame(t);
+            if (frame_ok_[k] == 0) continue;
+            const CamPose& F = frame_pose_[k];
+            const cv::Vec3d q = F.R_WC.t() * (pW - F.t_WC_mm);
+            if (q[2] <= 0.0 || std::hypot(q[0], q[1]) / q[2] > infos_[k].roi_r) continue;  // sau camera / meo gap
+            in_frame.emplace_back(static_cast<float>(q[0]), static_cast<float>(q[1]), static_cast<float>(q[2]));
+            frame_of.push_back(k);
+            src.push_back(i);
+            cand_W.push_back(pW);
+        }
+        project_px(in_frame, camera_, uv_);
+        bool used = false;
+        for (std::size_t j = 0; j < in_frame.size(); ++j) {
+            const FrameInfo& f = infos_[frame_of[j]];
+            const SegMask& seg = frames[f.index].obj.mask;
+            const int col = round_half_even(uv_[j].x) - seg.x0_px;
+            const int row = round_half_even(uv_[j].y) - seg.y0_px;
+            if (col < 0 || col >= f.mask.cols || row < 0 || row >= f.mask.rows) continue;
+            if (f.mask.ptr<uint8_t>(row)[col] == 0) continue;  // chi diem TRONG mask
+            r.points_C_mm.push_back(scan_points_[src[j]]);
+            r.points_t_ns.push_back(scan_t_[src[j]]);
+            r.points_frame.push_back(static_cast<uint16_t>(f.index));
+            r.points_scan.push_back(static_cast<uint16_t>(si));
+            points_W_.push_back(cand_W[j]);
+            used = true;
+        }
+        r.n_scans += used ? 1 : 0;
+    }
+}
+
+// RANSAC 3 diem + PCA -> dieu kien -> PLANE / HEIGHT_ONLY -> tam (giao tia), truc, W / L / yaw o khung tham chieu.
+// Cua so thich ung: thu window_s, + window_step_s, ... toi max_window_s (diem moi nhat giu lai, them diem cu hon); cua
+// so dau tien dat accept_plane -> PLANE. Khong dat -> HEIGHT_ONLY tren cua so nho nhat du min_pts diem.
+void Fusion::solve_world(std::span<const MaskFrame> frames, FusionResult& r) {
+    const cv::Vec3d down(0.0, 0.0, 1.0);  // NED: trong luc
+    const WorldPlaneConfig& wc = cfg_.world;
+    const int64_t t_ref = infos_.back().t_ns;
+    const double max_w = wc.effective_max_window_s();
+    std::vector<std::size_t> idx;  // chi so trong points_W_ cua cua so dang thu
+    std::vector<cv::Vec3d> sub;
+    const auto select = [&](double w) {
+        const int64_t t_lo = t_ref - static_cast<int64_t>(w * 1e9);
+        idx.clear();
+        sub.clear();
+        for (std::size_t i = 0; i < points_W_.size(); ++i)
+            if (r.points_t_ns[i] >= t_lo) idx.push_back(i), sub.push_back(points_W_[i]);
+    };
+    PlaneQuality q;
+    double w_ok = kNaN, w_height = kNaN;  // cua so PLANE / cua so nho nhat du diem
+    for (double w = wc.window_s;; w = std::min(w + wc.window_step_s, max_w)) {
+        select(w);
+        if (static_cast<int>(sub.size()) >= cfg_.min_pts) {
+            if (!std::isfinite(w_height)) w_height = w;
+            ransac_pca_plane(sub, cfg_.plane_iters, cfg_.ransac_tau_mm, down, cfg_.max_tilt_deg, rng_, pca_);
+            q = pca_.n_inliers > 0 ? accept_plane(pca_, wc) : PlaneQuality{};
+            if (q.accepted) {
+                w_ok = w;
+                break;
+            }
+        }
+        if (w >= max_w - 1e-9) break;
+    }
+    r.lambda_mm2 = pca_.lambda_mm2;  // lan thu cuoi (PLANE: cua so dat; khong: cua so lon nhat)
+    r.sqrt_l2_mm = q.sqrt_l2_mm;
+    r.sigma_theta_deg = q.sigma_theta_deg;
+    r.n_required = q.n_required;
+    cv::Vec3d n_W = down, c_W;
+    std::vector<uint8_t> sub_in;
+    if (q.accepted) {
+        r.mode = PlaneMode::kPlane;
+        r.window_used_s = w_ok;
+        n_W = pca_.n;
+        c_W = pca_.c;
+        sub_in = pca_.inliers;
+    } else {  // HEIGHT_ONLY: phap tuyen theo trong luc, do cao RANSAC 1D + median
+        r.mode = PlaneMode::kHeightOnly;
+        if (!std::isfinite(w_height)) return;
+        r.window_used_s = max_w;  // da thu het cua so ma khong ra vector huong
+        select(w_height);
+        const double h = height_1d(sub, down, cfg_.plane_iters, cfg_.ransac_tau_mm, rng_, sub_in);
+        if (!std::isfinite(h)) return;
+        cv::Vec3d sum(0, 0, 0);
+        int n = 0;
+        for (std::size_t j = 0; j < sub.size(); ++j)
+            if (sub_in[j] != 0) sum += sub[j], ++n;
+        c_W = {sum[0] / n, sum[1] / n, h};
+    }
+    r.n_window_points = static_cast<int>(sub.size());
+    r.inliers.assign(points_W_.size(), 0);
+    for (std::size_t j = 0; j < idx.size(); ++j) r.inliers[idx[j]] = sub_in[j];
+    const CamPose& P = frame_pose_.back();
+    if (n_W.dot(c_W - P.t_WC_mm) < 0.0) n_W = -n_W;  // phap tuyen ra xa camera
+    double ss = 0.0;
+    for (std::size_t i = 0; i < points_W_.size(); ++i) {
+        if (r.inliers[i] == 0) continue;
+        const double e = n_W.dot(points_W_[i] - c_W);
+        ss += e * e;
+        ++r.n_inliers;
+    }
+    r.rms_mm = r.n_inliers > 0 ? std::sqrt(ss / r.n_inliers) : kNaN;
+    r.inlier_ratio = static_cast<double>(r.n_inliers) / static_cast<double>(std::max<std::size_t>(sub.size(), 1));
+    // khung tham chieu (khung co mask moi nhat)
+    const cv::Matx33d R_CW = P.R_WC.t();
+    const cv::Vec3d n_C = R_CW * n_W, c_C = R_CW * (c_W - P.t_WC_mm);
+    r.points_ref_mm.resize(points_W_.size());
+    for (std::size_t i = 0; i < points_W_.size(); ++i) {
+        const cv::Vec3d p = R_CW * (points_W_[i] - P.t_WC_mm);
+        r.points_ref_mm[i] = {static_cast<float>(p[0]), static_cast<float>(p[1]), static_cast<float>(p[2])};
+    }
+    const FrameInfo& ref = infos_.back();
+    cv::Vec3d center;
+    if (!ray_plane({ref.ray.x, ref.ray.y, 1.0}, n_C, c_C, center)) return;  // INSUFFICIENT
+    TopRect tr;
+    const bool has_rect = top_rect_on_plane(frames[ref.index].obj.mask, camera_, n_C, c_C, tr);
+    cv::Vec3d x = has_rect ? tr.axis_x_C : cv::Vec3d(1, 0, 0) - n_C[0] * n_C;
+    x /= cv::norm(x);
+    r.p_obj_mm = {center[0], center[1], center[2]};
+    const cv::Vec3d pw = P.R_WC * center + P.t_WC_mm;
+    r.p_obj_W_mm = {pw[0], pw[1], pw[2]};
+    r.normal_W = n_W;
+    r.axis_z = n_C;
+    r.axis_x = x;
+    r.axis_y = n_C.cross(x);
+    r.tilt_deg = std::acos(std::clamp(n_C[2], -1.0, 1.0)) * 180.0 / CV_PI;
+    r.d_mm = center[2];
+    r.dist_mm = cv::norm(center);
+    r.plane_dist_mm = std::abs(n_C.dot(c_C));  // camera -> mat top, vuong goc (LiDAR, diem trong mask)
+    r.W_mm = tr.W_mm;
+    r.L_mm = tr.L_mm;
+    r.yaw_deg = tr.yaw_deg;
+    r.normal_observable = r.mode == PlaneMode::kPlane;
+    r.status = r.inlier_ratio >= cfg_.min_inlier_ratio ? FusionStatus::kOk : FusionStatus::kLowConfidence;
+}
+
+FusionResult Fusion::operator()(std::span<const MaskFrame> frames, std::span<const Scan> scans,
+                                std::span<const CamPoseSample> poses) {
     FusionResult r;
     r.n_frames = static_cast<int>(frames.size());
     if (frames.empty()) return r;
     prepare(frames);
     r.t_image_ns = infos_.back().t_ns;
+    if (cfg_.method == FusionMethod::kWorld && !poses.empty() && fuse_world(frames, scans, poses, r)) return r;
     collect(frames, scans, r);
     r.n_points = static_cast<int>(r.points_C_mm.size());
     r.inliers.assign(r.points_C_mm.size(), 0);

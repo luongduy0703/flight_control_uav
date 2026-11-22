@@ -101,6 +101,12 @@ public:
 
     [[nodiscard]] std::size_t crc_errors() const noexcept { return crc_errors_.load(); }
     [[nodiscard]] std::size_t bytes_received() const noexcept { return bytes_received_.load(); }
+    [[nodiscard]] std::size_t good_packets() const noexcept { return good_packets_.load(); }
+    // Ty le goi loi (%) = loi / (loi + tot); 0 khi chua co goi.
+    [[nodiscard]] double error_percent() const noexcept {
+        const double bad = static_cast<double>(crc_errors()), all = bad + static_cast<double>(good_packets());
+        return all > 0.0 ? 100.0 * bad / all : 0.0;
+    }
     void add_bytes(std::size_t n) noexcept { bytes_received_ += n; }
     void add_crc_errors(std::size_t n) noexcept { crc_errors_ += n; }
 
@@ -116,6 +122,7 @@ private:
     int64_t delay_ns_{0};
     alignas(64) std::atomic<std::size_t> crc_errors_{0};      // luong doc ghi, luong khac doc: tach dong cache
     alignas(64) std::atomic<std::size_t> bytes_received_{0};
+    alignas(64) std::atomic<std::size_t> good_packets_{0};
 };
 
 // LD06 cam vao cong serial (vd /dev/ttyUSB0): doc theo khoi o luong rieng (poll co timeout), dong ho mono_ns().

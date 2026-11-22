@@ -101,7 +101,17 @@ void write_fusion_summary(JsonWriter& w, const FusionResult& r) {
     if (r.points_t_ns.empty()) w.null();
     else w.begin_array().value(r.t_lidar_first_ns).value(r.t_lidar_last_ns).end_array();
     w.key("plane2").begin_object().key("d_mm").num(r.d2_mm).key("n_points").value(r.n2_inliers).end_object();
-    w.key("ambiguous").value(r.ambiguous);
+    w.key("ambiguous").value(r.ambiguous).key("mode").value(name(r.mode));
+    w.key("world").begin_object().key("p_obj_W_mm").begin_array();
+    w.num(r.p_obj_W_mm.x).num(r.p_obj_W_mm.y).num(r.p_obj_W_mm.z).end_array().key("normal_W");
+    vec3(w, r.normal_W);
+    w.key("lambda_mm2").begin_array().num(r.lambda_mm2[0]).num(r.lambda_mm2[1]).num(r.lambda_mm2[2]).end_array();
+    w.key("sqrt_l2_mm").num(r.sqrt_l2_mm).key("sigma_theta_deg").num(r.sigma_theta_deg);
+    w.key("n_required").num(r.n_required).key("n_pose_missing").value(r.n_pose_missing).key("axis_x_W");
+    vec3(w, r.axis_x_W);
+    w.key("yaw_W_deg").num(r.yaw_W_deg).key("window_used_s").num(r.window_used_s);
+    w.key("n_window_points").value(r.n_window_points).key("plane_dist_mm").num(r.plane_dist_mm);
+    w.end_object();
     w.key("points_file").value("lidar_points.csv").end_object();
 }
 

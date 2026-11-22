@@ -28,6 +28,36 @@ READY_MARK = 'Cho lenh bat dau tu may tinh'
 SCAN_MARK = 'BAT DAU: lenh'
 RESULT_MARK = 'Ket qua: '
 ERROR_MARK = 'LOI: '
+# Machine-readable lines for planA (lock phase, live_app.cpp). Values: NED EKF, mm.
+TARGET_MARK = 'TARGET p_W_mm='      # object locked: first world position
+ALIGN_MARK = 'ALIGN ok='            # does the LiDAR line cross the object (e_mm <= e_max_mm)
+OBJECT_MARK = 'OBJECT p_W_mm='      # final top-surface centre, normal, yaw
+MARKER_MARK = 'MARKER seen='        # launch ArUco under the UAV (evaluation only, never a setpoint)
+ARUCO_MARK = 'ARUCO_S4 found='     # ArUco on the object at the final s4 image: distance error (evaluation only)
+RUN_DIR_MARK = 'THU MUC KET QUA '   # result directory, printed at startup
+_KV = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=(\S+)')
+
+
+def _numbers(text):
+    values = tuple(float(v) for v in text.split(','))
+    return values[0] if len(values) == 1 else values
+
+
+def parse_marked(line):
+    """('target' | 'align' | 'object' | 'marker' | 'aruco', {key: float or tuple}) for a planA line, else None."""
+    for kind, mark in (('target', TARGET_MARK), ('align', ALIGN_MARK), ('object', OBJECT_MARK),
+                       ('marker', MARKER_MARK), ('aruco', ARUCO_MARK)):
+        index = line.find(mark)
+        if index < 0:
+            continue
+        values = {}
+        for key, raw in _KV.findall(line[index:]):
+            try:
+                values[key] = _numbers(raw)
+            except ValueError:
+                values[key] = raw
+        return kind, values
+    return None
 
 
 @contextmanager
@@ -102,6 +132,12 @@ class PerceptionProcess:
         self.state = 'STOPPED'
         self.last_error = None
         self.last_result = None
+        self.last_target = None   # parse_marked values of the latest TARGET / ALIGN / OBJECT line
+        self.last_align = None
+        self.last_object = None
+        self.last_marker = None   # latest MARKER line (launch ArUco, evaluation only)
+        self.run_dir = None
+        self.marked = deque(maxlen=200)  # (kind, values, monotonic time) for planA, oldest first
         self.exit_code = None
         self.failed_starts = 0
         self.restart_at = None
@@ -136,6 +172,8 @@ class PerceptionProcess:
             self.exit_code = None
             self.restart_at = None
             self.last_result = None
+            self.last_target = self.last_align = self.last_object = self.last_marker = self.run_dir = None
+            self.marked.clear()
             self.generation += 1
             self.reader = threading.Thread(target=self._read_log,
                                            args=(self.child, log, self.generation), daemon=True)
@@ -162,6 +200,14 @@ class PerceptionProcess:
                         self.events.append(f'perception DONE: result in {self.last_result} (on Pi)')
                     elif ERROR_MARK in line:
                         self.last_error = line.split(ERROR_MARK, 1)[1].strip()
+                    elif RUN_DIR_MARK in line:
+                        self.run_dir = line.split(RUN_DIR_MARK, 1)[1].strip()
+                    else:
+                        marked = parse_marked(line)
+                        if marked is not None:
+                            kind, values = marked
+                            setattr(self, f'last_{kind}', values)
+                            self.marked.append((kind, values, self.clock()))
         finally:
             log.close()
 
@@ -242,6 +288,13 @@ class PerceptionProcess:
             self.events.clear()
         return events
 
+    def take_marked(self):
+        """TARGET / ALIGN / OBJECT lines seen since the last call."""
+        with self.lock:
+            items = list(self.marked)
+            self.marked.clear()
+        return items
+
     def status(self):
         with self.lock:
             return {'state': self.state, 'pid': None if self.child is None else self.child.pid,
@@ -251,10 +304,12 @@ class PerceptionProcess:
                     'target': f"{self.ids['companion_sysid']}/{self.ids['companion_compid']}"}
 
 
-def send_perception_command(fc, ids, start, timeout_s=1.0, attempts=3):
-    """COMMAND_LONG(command_id, param1=1 start / 0 stop) to the perception
+def send_perception_command(fc, ids, start, timeout_s=1.0, attempts=3, floor_down_m=None):
+    """COMMAND_LONG(command_id, param1=1 start / 0 stop / 2 'scan') to the perception
     component through MAVSDK. Returns True when uavp_fc_bridge ACKs. The ACK
-    only proves delivery to the Pi; the perception log confirms the scan."""
+    only proves delivery to the Pi; the perception log confirms the scan.
+    floor_down_m (start only): floor level in EKF NED z (m) -> param2, param3 = 1; perception then derives the
+    camera-floor distance for detection-stage size rejection from EKF."""
     from mavsdk.plugins.mavlink_direct import MavlinkMessage
     import json
     sysid, compid, command = ids['companion_sysid'], ids['companion_compid'], ids['command_id']
@@ -270,7 +325,8 @@ def send_perception_command(fc, ids, start, timeout_s=1.0, attempts=3):
             pass
 
     fields = {'target_system': sysid, 'target_component': compid, 'command': command,
-              'confirmation': 0, 'param1': 1.0 if start else 0.0, 'param2': 0.0, 'param3': 0.0,
+              'confirmation': 0, 'param1': 2.0 if start == 'scan' else 1.0 if start else 0.0, 'param2': 0.0 if floor_down_m is None else float(floor_down_m),
+              'param3': 0.0 if floor_down_m is None else 1.0,
               'param4': 0.0, 'param5': 0.0, 'param6': 0.0, 'param7': 0.0}
     handle = fc.mavlink_direct.subscribe_message('COMMAND_ACK', on_ack)
     try:

@@ -11,6 +11,7 @@ __pycache__/
 # Runtime logs
 session-logs/
 **/session-logs/
+planA/logs/
 *.log
 
 # Editor / OS
@@ -20,3 +21,8 @@ session-logs/
 
 # Perception scans pulled from the Pi (tools/pull_perception_results.py)
 results_perception/
+
+# Handoff archives and run data copied from the Pi
+
+remote_runs/
+runs_pi/

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -101,6 +102,19 @@ void PiCamera::Impl::start(const CaptureConfig& cap) {
         ctrls.set(lc::controls::AfMode, lc::controls::AfModeManual);
         ctrls.set(lc::controls::LensPosition, static_cast<float>(cap.lens_position));
     }
+    // Phoi sang / gain KHOA (sources.camera_exposure_us / camera_analogue_gain > 0): anh it mo khi UAV rung. Tu
+    // libcamera 0.5: phai dat che do Manual (ExposureTimeMode / AnalogueGainMode) thi gia tri moi co tac dung.
+    const lc::ControlInfoMap& info = camera->controls();
+    if (cap.exposure_us > 0.0) {
+        if (info.count(&lc::controls::ExposureTimeMode) != 0U)
+            ctrls.set(lc::controls::ExposureTimeMode, lc::controls::ExposureTimeModeManual);
+        ctrls.set(lc::controls::ExposureTime, static_cast<int32_t>(std::lround(cap.exposure_us)));
+    }
+    if (cap.analogue_gain > 0.0) {
+        if (info.count(&lc::controls::AnalogueGainMode) != 0U)
+            ctrls.set(lc::controls::AnalogueGainMode, lc::controls::AnalogueGainModeManual);
+        ctrls.set(lc::controls::AnalogueGain, static_cast<float>(cap.analogue_gain));
+    }
     camera->requestCompleted.connect(this, &Impl::on_complete);
     if (camera->start(&ctrls) < 0) throw std::runtime_error("camera->start that bai");
     started = true;
@@ -144,6 +158,11 @@ PiCamera::PiCamera(const CaptureConfig& capture, int buffer_count, int sensor_bi
     UAVP_LOG_INFO("uavp.sources", "Camera: %s, %dx%d, che do cam bien %dx%d, lat %d do, %.0f fps, LensPosition %.3f",
                   im.camera->id().c_str(), capture.width_px, capture.height_px, capture.sensor_width_px,
                   capture.sensor_height_px, capture.rotate_deg, capture.fps, capture.lens_position);
+    UAVP_LOG_INFO("uavp.sources", "Camera phoi sang: %s, gain: %s",
+                  capture.exposure_us > 0.0 ? (std::to_string(std::lround(capture.exposure_us)) + " us (KHOA)").c_str()
+                                            : "tu dong",
+                  capture.analogue_gain > 0.0 ? (std::to_string(capture.analogue_gain).substr(0, 4) + " (KHOA)").c_str()
+                                              : "tu dong");
 }
 
 PiCamera::~PiCamera() {

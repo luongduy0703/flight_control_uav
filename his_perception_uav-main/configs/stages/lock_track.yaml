@@ -34,3 +34,14 @@ max_duration_s: 3.0 # bam toi da 3 s sau khi khoa (ket qua cuoi lay luc dung)
 min_segments: 5 # it nhat 5 lan segment (5 vong LiDAR) truoc khi dung som
 stop_when_converged: true # s4 ok + do duoc nghieng 2 huong + khong 2 mat tuong dong -> dung som
 warped_masks_for_lidar: false # true: loc LiDAR ca bang mask da doi (khung khong segment) -> nhieu diem hon, mask kem chinh xac
+
+# --- Dieu kien LiDAR quet qua vat (planA; src/stages/s4_fusion/lidar_align.cpp) ---
+# Moi vong LiDAR moi: chieu vong quet len anh (T_CL), e_px = khoang cach tam vat (Kalman) -> duong LiDAR,
+# e_mm = e_px * d / f_x. align_gate: true -> chi segment + tich luy duong quet khi e_mm <= align_e_max_mm
+# (min_segments / dung som chi dem lan dat). In dong "ALIGN ..." de planA chinh vi tri UAV.
+wait_scan_command: false # planA bat: chi tich luy / ket thuc sau lenh QUET (param1 = 2, UAV da ha xuong 0.8 m)
+scan_max_duration_s: 0 # gioi han pha tich luy sau lenh QUET (0 = max_duration_s); planA: 12 (cua so toi da 10 s + 2)
+align_gate: false # mac dinh tat (giu hanh vi cu); planA bat qua --set lock_track.align_gate=true
+align_e_max_mm: 15.0 # nguong sai so cho phep (mm, tai do sau d)
+align_max_gap_px: 40 # 2 diem LiDAR lien tiep cach > 40 px tren anh (mep vat -> san): khong noi thanh doan
+align_log_period_s: 0.5 # in ALIGN toi da moi 0.5 s (va moi khi dat / mat dieu kien)

@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from console import execute, parse_command, poll_perception, main, pin_control_cores
 from perception_process import (PerceptionProcess, read_perception_ids, send_perception_command,
-                                MAX_FAILED_STARTS)
+                                MAX_FAILED_STARTS, parse_marked)
 
 ROOT = Path(__file__).resolve().parents[1]
 PERCEPTION_CONFIG = ROOT / 'his_perception_uav-main' / 'configs' / 'run' / 'real_time.yaml'
@@ -83,6 +83,50 @@ class PerceptionIdsTests(unittest.TestCase):
             (project / 'build' / 'uavp_real_time').unlink()
             with self.assertRaises(ValueError):
                 PerceptionProcess(project)
+
+
+class PlanALineTests(unittest.TestCase):
+    TARGET = 'INFO uavp.live: TARGET p_W_mm=635.0,255.5,-120.0 p_C_mm=1.0,2.0,600.0\n'
+    ALIGN = ('INFO uavp.live: ALIGN ok=0 valid=1 e_px=41.2 e_mm=30.1 e_max_mm=15.0 d_mm=600.0 '
+             'dW_mm=10.0,-30.0,0.0 n=120\n')
+    OBJECT = ('INFO uavp.live: OBJECT p_W_mm=640.0,250.0,-118.0 normal_W=0.0100,0.0200,0.9990 '
+              'yaw_W_deg=12.5 mode=plane d_mm=598.0\n')
+
+    def test_lines_are_parsed(self):
+        kind, v = parse_marked(self.TARGET)
+        self.assertEqual(kind, 'target')
+        self.assertEqual(v['p_W_mm'], (635.0, 255.5, -120.0))
+        kind, v = parse_marked(self.ALIGN)
+        self.assertEqual(kind, 'align')
+        self.assertEqual((v['ok'], v['e_mm'], v['dW_mm']), (0.0, 30.1, (10.0, -30.0, 0.0)))
+        kind, v = parse_marked(self.OBJECT)
+        self.assertEqual((kind, v['mode'], v['yaw_W_deg']), ('object', 'plane', 12.5))
+        self.assertIsNone(parse_marked(READY))
+        kind, v = parse_marked('TARGET p_W_mm=1600.0,2250.0,-60.0 p_C_mm=1.0,2.0,700.0 bbox_px=960.5,540.0 '
+                               'bbox_p_W_mm=1650.0,2240.0,-60.0')
+        self.assertEqual((kind, v['bbox_p_W_mm'], v['bbox_px']), ('target', (1650.0, 2240.0, -60.0), (960.5, 540.0)))
+        kind, v = parse_marked('INFO uavp.marker: MARKER seen=1 t_ns=12 reproj_px=0.40 tilt_cam_deg=2.0 '
+                               'p_cam_S_mm=5.0,-3.0,-800.0 world=1 p_M_W_mm=1000.0,2000.0,0.0 yaw_M_W_deg=90.00 '
+                               'tilt_W_deg=1.0 yaw_fc_deg=91.00 yaw_rel_deg=1.00')
+        self.assertEqual(kind, 'marker')
+        self.assertEqual(v['p_M_W_mm'], (1000.0, 2000.0, 0.0))
+        self.assertEqual((v['seen'], v['world'], v['yaw_rel_deg']), (1.0, 1.0, 1.0))
+        self.assertEqual(parse_marked('MARKER seen=0 n=4 rejected=1 reason=nghieng')[1]['reason'], 'nghieng')
+        _, v = parse_marked('ALIGN ok=0 valid=0 e_px=nan e_mm=nan dW_mm=nan,nan,nan n=0')
+        self.assertNotEqual(v['e_mm'], v['e_mm'])  # nan
+
+    def test_reader_keeps_latest_values_and_queue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child = FakeChild([READY, SCAN, 'INFO uavp.live: THU MUC KET QUA runs/x\n', self.TARGET,
+                               self.ALIGN, self.OBJECT, RESULT], None)
+            process = PerceptionProcess(make_project(tmp), log_dir=tmp, popen=Mock(return_value=child))
+            process.start()
+            process.reader.join(1)
+            self.assertEqual(process.run_dir, 'runs/x')
+            self.assertEqual(process.last_target['p_W_mm'][0], 635.0)
+            self.assertEqual([k for k, _, _ in process.take_marked()], ['target', 'align', 'object'])
+            self.assertEqual(process.take_marked(), [])
+            self.assertEqual(process.last_result, 'runs/20261117_real_time')
 
 
 class PerceptionLifecycleTests(unittest.TestCase):

@@ -48,6 +48,7 @@ void ScanBuffer::feed(std::span<const uint8_t> raw, int64_t t_rx_end_ns) {
         ++crc_errors_;
         return;
     }
+    ++good_packets_;
     point_times_ns(pkt_, t_rx_end_ns - delay_ns_, t_pts_);
     if (!assembler_.push(pkt_, t_pts_, completed_)) return;
     {

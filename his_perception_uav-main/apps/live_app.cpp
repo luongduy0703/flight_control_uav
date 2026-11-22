@@ -39,7 +39,12 @@
 #include "uavp/stages/s3_select.hpp"
 #include "uavp/stages/s2_segment/mask_shape.hpp"
 #include "uavp/stages/s4_fusion.hpp"
+#include "uavp/stages/s4_fusion/lidar_align.hpp"
+#include "uavp/stages/s4_fusion/lidar.hpp"
+#include "uavp/stages/s4_fusion/world_plane.hpp"
 #include "uavp/support/aruco_check.hpp"
+#include "uavp/support/launch_marker.hpp"
+#include "uavp/support/video_diag.hpp"
 #include "uavp/support/cpu_affinity.hpp"
 #include "uavp/support/draw.hpp"
 #include "uavp/support/hw_monitor.hpp"
@@ -60,6 +65,7 @@ constexpr int kKeySpace = 32, kKeyEsc = 27;
 constexpr double kKeyPollS = 0.5;
 constexpr double kStatusPeriodS = 5.0;
 constexpr double kAxisDrawMm = 40.0;
+constexpr int kSnapshotJpegQuality = 90;  // start.jpg, detect.jpg, aligned.jpg
 
 struct Args {
     std::string cfg;
@@ -90,6 +96,9 @@ struct Live {
     std::string timing_csv;  // timing.csv: moi khung pha 1 mot dong
     std::string track_csv;   // track.csv: moi khung pha 3 mot dong
     std::filesystem::path fc_log;  // fc_events.jsonl: trang thai Pixhawk o moi quyet dinh (rong = khong ghi)
+    std::filesystem::path run_dir{};  // thu muc ket qua (anh moc: start.jpg, detect.jpg, aligned.jpg)
+    LaunchMarkerTracker* launch_marker{nullptr};  // ArUco diem cat canh (planA, chi danh gia); nullptr: tat
+    LaunchMarkerTracker* object_marker{nullptr};  // ArUco tren vat (launch_marker.track_object, chi danh gia)
 };
 
 constexpr const char* kTimingHeader = "frame,capture_ms,s1_ms,s2_ms,s3_ms,loop_ms,latency_ms\n";
@@ -125,6 +134,17 @@ struct LockRun {
     int segments{0};
     double duration_s{0.0};
     bool has_world{false};
+    // Dieu kien LiDAR quet qua vat (lock_track.align_*)
+    int align_checks{0};             // so vong LiDAR da xet
+    int align_ok{0};                 // so vong dat e_mm <= align_e_max_mm
+    int align_last{-1};              // -1 chua xet, 0 khong dat, 1 dat
+    int64_t align_logged_ns{0};
+    double t_first_aligned_s{kNaN};  // tu luc khoa toi lan dat dau tien
+    LidarAlign align_last_result;
+    // Lenh QUET (lock_track.wait_scan_command) + thoi gian ra vector huong
+    int64_t scan_t0_ns{0};           // luc bat dau tich luy (0 = dang cho lenh QUET)
+    double t_plane_s{kNaN};          // tu luc bat dau tich luy toi lan dau s4 ra PLANE
+    double plane_window_s{kNaN};     // cua so LiDAR can de ra PLANE lan dau
 };
 
 Args parse_args(int argc, char** argv) {
@@ -142,6 +162,20 @@ std::optional<CamPose> pose_at(const Live& live, int64_t t_ns) {
     FcPose fc;
     if (live.fc == nullptr || !live.fc->pose_at(t_ns, fc)) return std::nullopt;
     return camera_pose(fc, live.body_camera);
+}
+
+// Mau tu the camera tai moi mau ATTITUDE trong [t_lo, t_hi] (s4 method world: slerp giua cac mau nay).
+std::vector<CamPoseSample> pose_samples(const Live& live, int64_t t_lo_ns, int64_t t_hi_ns) {
+    std::vector<CamPoseSample> out;
+    if (live.fc == nullptr) return out;
+    std::vector<int64_t> times;
+    live.fc->attitude_times(t_lo_ns, t_hi_ns, times);
+    out.reserve(times.size());
+    for (const int64_t t : times) {
+        FcPose fc;
+        if (live.fc->pose_at(t, fc)) out.push_back({camera_pose(fc, live.body_camera), t});
+    }
+    return out;
 }
 
 int show_live(Live& live, const cv::Mat& image, const std::vector<std::string>& lines, const std::vector<Track>& tracks) {
@@ -445,6 +479,9 @@ StartInfo wait_fc(Live& live) {
         FrameMeta meta;
         if (!live.camera.next_frame(live.pool.image(slot), meta, live.src.frame_timeout_s))
             throw std::runtime_error("Khong co khung moi sau frame_timeout_s");
+        // Truoc cat canh -> cat canh -> hover: do ArUco diem cat canh (tu gioi han launch_marker.period_s).
+        if (live.launch_marker != nullptr) live.launch_marker->update(live.pool.image(slot), meta.t_ns, live.fc);
+        if (live.object_marker != nullptr) live.object_marker->update(live.pool.image(slot), meta.t_ns, live.fc);
         int key = remote_key(live);
         if (key < 0 && live.keys.enabled()) key = live.keys.read_key(0.0).value_or(-1);
         if (key == 'q') {
@@ -472,6 +509,21 @@ StartInfo wait_fc(Live& live) {
         StartInfo info{"optical flow / rangefinder (FC)", kNaN, true};
         info.D_m = camera_floor_distance_m(g.height_m, has_pose ? pose.roll_rad : 0.0, has_pose ? pose.pitch_rad : 0.0,
                                            live.distance);
+        // planA gui muc san EKF kem lenh bat dau: D = (z san - z camera) / cos(truc quang, phuong dung), deu tu EKF.
+        if (std::isfinite(fs.floor_down_m)) {
+            const std::optional<CamPose> cam = pose_at(live, now);
+            const double h_m = cam && cam->has_position ? fs.floor_down_m - cam->t_WC_mm[2] / 1000.0 : kNaN;
+            const double cz = cam ? cam->R_WC(2, 2) : kNaN;  // truc quang camera . phuong xuong
+            if (std::isfinite(h_m) && h_m > 0.2 && h_m < 5.0 && cz > 0.5) {
+                UAVP_LOG_INFO(kModule, "D tu EKF: camera cao %.3f m tren san (z san %.3f m) -> D %.3f m (flow / ToF: %.3f m)",
+                              h_m, fs.floor_down_m, h_m / cz, info.D_m);
+                info.D_m = h_m / cz;
+                info.distance_source = "EKF (z san tu planA)";
+            } else {
+                UAVP_LOG_WARN(kModule, "Muc san EKF %.3f m nhung khong tinh duoc do cao camera hop le: dung flow / ToF",
+                              fs.floor_down_m);
+            }
+        }
         UAVP_LOG_INFO(kModule, "BAT DAU: lenh %s%s (do cao cam bien %.3f m -> camera - san %.3f m)",
                       g.by_viewer ? "SPACE tren viewer" : "gcs_command.py qua Pixhawk", g.hover_required ? " + hover" : "",
                       g.height_m, info.D_m);
@@ -623,7 +675,26 @@ void select_events(const Live& live, const Session& s, uint32_t idx, const StepT
     for (std::size_t i = 0; i < s.tracks.size(); ++i) prev[i] = s.tracks[i].state;
 }
 
+// Anh moc cho planA (RGB -> jpg trong thu muc ket qua). Loi ghi anh chi canh bao, khong dung chuong trinh.
+void save_snapshot(const Live& live, const char* file, const cv::Mat& image_rgb) {
+    if (live.run_dir.empty()) return;
+    try {
+        write_image_rgb(live.run_dir / file, image_rgb, kSnapshotJpegQuality);
+        UAVP_LOG_INFO(kModule, "ANH %s", (live.run_dir / file).c_str());
+    } catch (const std::exception& e) {
+        UAVP_LOG_WARN(kModule, "Khong ghi duoc %s: %s", file, e.what());
+    }
+}
+
 // Pha 1: s1 -> s3 toi khi chon duoc vat (hoac het max_frames / bam q).
+// ArUco diem cat canh trong khung nay (do tiep, dong MARKER cho planA) -> vung KHONG chon vat cua s3.
+void set_marker_zone(Live& live, Session& s, const cv::Mat& image, int64_t t_ns) {
+    s.exclude.clear();
+    if (live.launch_marker == nullptr) return;
+    live.launch_marker->update(image, t_ns, live.fc);
+    if (const auto z = live.launch_marker->zone_px(t_ns, live.fc)) s.exclude.push_back({z->first, z->second});
+}
+
 void run_until_selected(Live& live, Detector& det, Segmenter& seg, Scanned& sc) {
     live.monitor.set_phase(Phase::kS1S3);
     const int64_t start_all = mono_ns();
@@ -636,7 +707,16 @@ void run_until_selected(Live& live, Detector& det, Segmenter& seg, Scanned& sc) 
             throw std::runtime_error("Khong co khung moi sau frame_timeout_s");
         live.pool.t_ns(slot) = meta.t_ns;
         const double capture_ms = ms_since(start);
-        if (idx == 0) sc.t_first_ns = meta.t_ns;
+        if (idx == 0) {
+            sc.t_first_ns = meta.t_ns;
+            cv::Mat start_img = live.pool.image(slot).clone();
+            const std::vector<std::string> title{"BAT DAU PERCEPTION | D = " + std::to_string(live.cfg.D_m) + " m"};
+            draw_title(start_img, title);
+            draw_center(start_img, live.cfg.camera.center_px());
+            save_snapshot(live, "start.jpg", start_img);
+        }
+        set_marker_zone(live, sc.session, live.pool.image(slot), meta.t_ns);
+        sc.session.pose = pose_at(live, meta.t_ns);  // tu the LUC CHUP: s3 bam vat theo diem tren san
         const StepTimes t = session_step(sc.session, idx, meta.t_ns, live.pool.image(slot), live.cfg, det, seg);
         const double latency_ms = static_cast<double>(mono_ns() - meta.t_ns) / 1e6;
         select_events(live, sc.session, idx, t, prev_states);
@@ -657,6 +737,12 @@ void run_until_selected(Live& live, Detector& det, Segmenter& seg, Scanned& sc) 
         if (stop || sc.session.done) break;
     }
     sc.s1_s3_ms = ms_since(start_all);
+    if (sc.session.too_big_detections > 0)
+        UAVP_LOG_INFO(kModule, "Bo %d lan detection qua to o buoc detect (bbox > %.0f mm tai D %.2f m)",
+                      sc.session.too_big_detections, live.cfg.bbox_max_mm, live.cfg.D_m);
+    if (sc.session.excluded_detections > 0)
+        UAVP_LOG_INFO(kModule, "Bo %d lan detection nam tren ArUco diem cat canh (to giay khong phai vat gap)",
+                      sc.session.excluded_detections);
 }
 
 // --- s4 -----------------------------------------------------------------------------------------------------------
@@ -672,11 +758,27 @@ FusionResult run_fusion(Live& live, Fusion& fusion, const std::vector<MaskFrame>
     bool truncated = false;
     live.lidar.collected_since(t_lo - window_ns, scans, next, truncated);
     if (truncated) UAVP_LOG_WARN(kModule, "Bo dem LiDAR khong phu het phien: tang sources.lidar_buffer_scans");
-    const FusionResult r = fusion(frames, scans);
+    const std::vector<CamPoseSample> poses =
+        live.cfg.fusion.method == FusionMethod::kWorld
+            ? pose_samples(live, t_hi - static_cast<int64_t>(live.cfg.fusion.world.effective_max_window_s() * 1e9) - window_ns,
+                           t_hi + window_ns)
+            : std::vector<CamPoseSample>{};
+    const FusionResult r = fusion(frames, scans, poses);
     live.timings.add("s4_fusion", ms_since(start));
-    UAVP_LOG_INFO(kModule, "s4 (%s) %s | %d khung co mask, %d scan, %d diem, inlier %.0f%%, rms %.1f mm | %s | %.1f ms",
-                  label, std::string(name(r.status)).c_str(), r.n_frames, r.n_scans, r.n_points, 100.0 * r.inlier_ratio,
-                  r.rms_mm, r.pose_compensated ? "bu bang tu the FC" : "bu bang anh", live.timings.get("s4_fusion")->back());
+    UAVP_LOG_INFO(kModule, "s4 (%s) %s [%s] | %d khung co mask, %d scan, %d diem, inlier %.0f%%, rms %.1f mm | %s | %.1f ms",
+                  label, std::string(name(r.status)).c_str(), std::string(name(r.mode)).c_str(), r.n_frames, r.n_scans,
+                  r.n_points, 100.0 * r.inlier_ratio, r.rms_mm,
+                  r.mode != PlaneMode::kImage ? "deskew theo tu the FC, he the gioi"
+                  : r.pose_compensated        ? "bu bang tu the FC"
+                                              : "bu bang anh",
+                  live.timings.get("s4_fusion")->back());
+    if (r.mode != PlaneMode::kImage)
+        UAVP_LOG_INFO(kModule, "s4 world: sqrt(l2) %.1f mm | sigma_theta %.2f do | N %d / can %.0f | %d diem thieu tu the"
+                      " | cua so %.1f s (%d diem trong mask) | camera->mat top (LiDAR) %.1f mm",
+                      r.sqrt_l2_mm, r.sigma_theta_deg, r.n_inliers, r.n_required, r.n_pose_missing, r.window_used_s,
+                      r.n_window_points, r.plane_dist_mm);
+    else if (live.cfg.fusion.method == FusionMethod::kWorld)
+        UAVP_LOG_WARN(kModule, "s4: method world nhung khung moi nhat khong co tu the FC co vi tri -> dung cach image");
     return r;
 }
 
@@ -702,6 +804,21 @@ std::vector<MaskFrame> mask_frames(const Live& live, const Track& t) {
 }
 
 // --- Pha 2 + 3: khoa + bam ----------------------------------------------------------------------------------------
+// Tam bbox (px) -> diem tren mat top (he camera) -> W. Mat top: mat phang s4 lan dau neu co, khong thi mat song song
+// mat anh o do sau cua p_C (tam mask). NaN neu khong co tu the FC co vi tri.
+cv::Point3d bbox_world_mm(cv::Point2d box_px, const cv::Point3d& p_C, const FusionResult& r0,
+                          const std::optional<CamPose>& pose, const CameraModel& camera) {
+    if (!pose || !pose->has_position || !std::isfinite(p_C.z)) return {kNaN, kNaN, kNaN};
+    const cv::Point3d unit = object_position_mm(box_px, 1.0, camera);  // tia (x_n, y_n, 1)
+    const cv::Vec3d ray(unit.x, unit.y, 1.0);
+    cv::Vec3d q = ray * p_C.z;
+    if (std::isfinite(r0.axis_z[0]) && std::isfinite(r0.p_obj_mm.z)) {
+        cv::Vec3d hit;
+        if (ray_plane(ray, r0.axis_z, cv::Vec3d(r0.p_obj_mm.x, r0.p_obj_mm.y, r0.p_obj_mm.z), hit)) q = hit;
+    }
+    return to_world(*pose, {q[0], q[1], q[2]});
+}
+
 void lock_object(Live& live, LockedTracker& tracker, const Track& track, int slot, const FusionResult& r0, LockRun& run) {
     const MaskFrame& last = run.frames.back();
     const cv::Point3d p_C = std::isfinite(r0.p_obj_mm.z)
@@ -712,6 +829,16 @@ void lock_object(Live& live, LockedTracker& tracker, const Track& track, int slo
     run.p_W_lock_mm = tracker.p_W_mm();
     run.ref_slot = slot;
     live.pool.retain(slot);
+    if (run.has_world) {
+        // Tam bbox cua vat selected (cung khung voi mask) -> mat top -> W: planA bay toi day (duong LiDAR cat qua).
+        const cv::Point2d box_px = predicted_box(track, track.last_mask_frame).center_px();
+        const cv::Point3d b = bbox_world_mm(box_px, p_C, r0, last.pose, live.cfg.camera);
+        UAVP_LOG_INFO(kModule,
+                      "TARGET p_W_mm=%.1f,%.1f,%.1f p_C_mm=%.1f,%.1f,%.1f bbox_px=%.1f,%.1f "
+                      "bbox_p_W_mm=%.1f,%.1f,%.1f",
+                      run.p_W_lock_mm.x, run.p_W_lock_mm.y, run.p_W_lock_mm.z, p_C.x, p_C.y, p_C.z, box_px.x, box_px.y,
+                      b.x, b.y, b.z);
+    }
     if (run.has_world)
         UAVP_LOG_INFO(kModule, "KHOA vat: p_C = (%.1f, %.1f, %.1f) mm -> p_W = (%.1f, %.1f, %.1f) mm (NED EKF)%s", p_C.x,
                       p_C.y, p_C.z, run.p_W_lock_mm.x, run.p_W_lock_mm.y, run.p_W_lock_mm.z,
@@ -767,21 +894,95 @@ bool segment_now(Live& live, Segmenter& seg, LockedTracker& tracker, int slot, i
     return true;
 }
 
-bool converged(Live& live, Fusion& fusion, const LockRun& run) {
-    if (!live.lock.stop_when_converged || run.segments < live.lock.min_segments) return false;
+bool converged(Live& live, Fusion& fusion, LockRun& run) {
+    if (!live.lock.stop_when_converged || run.segments < live.lock.min_segments || run.scan_t0_ns == 0) return false;
     const FusionResult r = run_fusion(live, fusion, run.frames, "kiem tra hoi tu");
+    if (r.mode == PlaneMode::kPlane && !std::isfinite(run.t_plane_s)) {
+        run.t_plane_s = static_cast<double>(mono_ns() - run.scan_t0_ns) / 1e9;
+        run.plane_window_s = r.window_used_s;
+        UAVP_LOG_INFO(kModule, "VECTOR HUONG: PLANE sau %.1f s tich luy (cua so LiDAR %.1f s, %d diem, sqrt(l2) %.1f mm)",
+                      run.t_plane_s, r.window_used_s, r.n_window_points, r.sqrt_l2_mm);
+    }
     return r.status == FusionStatus::kOk && r.normal_observable && !r.ambiguous;
+}
+
+// Lenh QUET tu planA (UAV da ha xuong do cao quet): bat dau tich luy, bo khung co mask chup truoc do (khac do cao).
+void maybe_start_scan(Live& live, LockRun& run) {
+    if (run.scan_t0_ns != 0) return;
+    const FcStatus s = live.fc->status(mono_ns(), live.start.hover_window_s);
+    if (s.scan_ns <= live.started_ns) return;
+    run.scan_t0_ns = mono_ns();
+    const std::size_t before = run.frames.size();
+    if (!run.frames.empty()) {  // giu it nhat khung moi nhat (s4 cuoi can >= 1 khung co mask)
+        const int64_t newest = std::max_element(run.frames.begin(), run.frames.end(), [](const MaskFrame& a, const MaskFrame& b) {
+                                   return a.t_ns < b.t_ns;
+                               })->t_ns;
+        std::erase_if(run.frames, [&](const MaskFrame& f) { return f.t_ns < s.scan_ns && f.t_ns != newest; });
+    }
+    run.segments = 0;
+    UAVP_LOG_INFO(kModule, "Lenh QUET: UAV da o do cao quet -> bat dau tich luy LiDAR (bo %zu khung co mask cu)",
+                  before - run.frames.size());
+}
+
+// Vong LiDAR moi nhat co quet qua tam vat khong (lidar_align.hpp). In "ALIGN ..." (planA doc) moi
+// align_log_period_s va moi khi doi trang thai; lan dat dau tien: aligned.jpg (duong LiDAR + tam + chan).
+LidarAlign check_align(Live& live, LockRun& run, const cv::Mat& image, cv::Point2d center_px,
+                       const std::optional<CamPose>& pose, double since_lock_s) {
+    Scan scan;
+    std::vector<cv::Point3f> pts;
+    std::vector<int64_t> t;
+    if (live.lidar.latest_scan(scan)) scan_to_camera_mm(scan, live.cfg.fusion.extrinsics, live.cfg.fusion, pts, t);
+    const LidarAlign a = lidar_alignment(pts, center_px, live.cfg.camera, image.cols, image.rows,
+                                         live.lock.align_max_gap_px, live.lock.align_e_max_mm);
+    ++run.align_checks;
+    if (a.ok) ++run.align_ok;
+    cv::Vec3d dW{kNaN, kNaN, kNaN};
+    if (a.valid && pose) dW = pose->R_WC * a.delta_C_mm;
+    const int state = a.ok ? 1 : 0;
+    const int64_t now = mono_ns();
+    if (state != run.align_last ||
+        static_cast<double>(now - run.align_logged_ns) / 1e9 >= live.lock.align_log_period_s) {
+        UAVP_LOG_INFO(kModule, "ALIGN ok=%d valid=%d e_px=%.1f e_mm=%.1f e_max_mm=%.1f d_mm=%.1f dW_mm=%.1f,%.1f,%.1f n=%d",
+                      state, a.valid ? 1 : 0, a.e_px, a.e_mm, live.lock.align_e_max_mm, a.d_mm, dW[0], dW[1], dW[2],
+                      a.n_visible);
+        run.align_logged_ns = now;
+    }
+    if (a.ok && run.align_ok == 1) {
+        run.t_first_aligned_s = since_lock_s;
+        std::vector<cv::Point2f> uv;
+        visible_px(pts, live.cfg.camera, image.cols, image.rows, uv);
+        char l1[160];
+        std::snprintf(l1, sizeof(l1), "LiDAR QUET QUA VAT: e_px %.1f | e_mm %.1f <= %.1f | d %.0f mm", a.e_px, a.e_mm,
+                      live.lock.align_e_max_mm, a.d_mm);
+        const std::vector<std::string> lines{l1};
+        cv::Mat img = draw_live(image, uv, center_px, lines, {});
+        draw_center(img, a.foot_px);
+        save_snapshot(live, "aligned.jpg", img);
+    }
+    run.align_last = state;
+    run.align_last_result = a;
+    return a;
 }
 
 void run_lock(Live& live, Segmenter& seg, Fusion& fusion, LockedTracker& tracker, LockRun& run) {
     live.monitor.set_phase(Phase::kLock);
     const int64_t start_all = mono_ns();
     std::size_t lidar_seen = live.lidar.count();
-    for (int i = 0; ms_since(start_all) < 1000.0 * live.lock.max_duration_s; ++i) {
+    const bool wait_scan = live.lock.wait_scan_command && live.fc != nullptr;
+    run.scan_t0_ns = wait_scan ? 0 : start_all;
+    if (wait_scan) UAVP_LOG_INFO(kModule, "Bam vat, CHO lenh QUET (planA gui khi UAV da ha xuong do cao quet)");
+    for (int i = 0;; ++i) {
+        if (wait_scan) maybe_start_scan(live, run);
+        // max_duration_s: tu luc khoa (khong cho lenh) hoac tu lenh QUET; dang cho lenh: gioi han cung max_duration_s
+        const double limit_s = run.scan_t0_ns != 0 && wait_scan && live.lock.scan_max_duration_s > 0.0
+                                   ? live.lock.scan_max_duration_s
+                                   : live.lock.max_duration_s;
+        if (ms_since(run.scan_t0_ns != 0 ? run.scan_t0_ns : start_all) >= 1000.0 * limit_s) break;
         const int slot = live.pool.acquire();
         FrameMeta meta;
         if (!live.camera.next_frame(live.pool.image(slot), meta, live.src.frame_timeout_s))
             throw std::runtime_error("Khong co khung moi sau frame_timeout_s");
+        if (live.launch_marker != nullptr) live.launch_marker->update(live.pool.image(slot), meta.t_ns, live.fc);
         const int64_t start = mono_ns();
         const std::optional<CamPose> pose = pose_at(live, meta.t_ns);
         const LockStep st = tracker.step(live.pool.image(slot), meta.t_ns, pose);
@@ -793,18 +994,24 @@ void run_lock(Live& live, Segmenter& seg, Fusion& fusion, LockedTracker& tracker
         bool segmented = false, check = false;
         if (const std::size_t n = live.lidar.count(); n > lidar_seen) {  // nhip LiDAR (10 Hz)
             lidar_seen = n;
-            segmented = segment_now(live, seg, tracker, slot, meta.t_ns, pose, run, s2_ms);
-            check = segmented;
+            const LidarAlign al =
+                check_align(live, run, live.pool.image(slot), st.center_px, pose, ms_since(start_all) / 1000.0);
+            if (!live.lock.align_gate || al.ok) {  // cong: chi tich luy khi LiDAR quet qua vat
+                segmented = segment_now(live, seg, tracker, slot, meta.t_ns, pose, run, s2_ms);
+                check = segmented;
+            }
         }
         if (!segmented && live.lock.warped_masks_for_lidar) run.frames.push_back({tracker.object(), pose, meta.t_ns, false});
+        if (run.scan_t0_ns == 0) check = false;  // chua o do cao quet: chua ket thuc
         const double latency_ms = static_cast<double>(mono_ns() - meta.t_ns) / 1e6;  // SensorTimestamp -> tam ROI
         live.timings.add("latency_lock", latency_ms);
         track_row(live, i, meta.t_ns, st, segmented, step_ms, s2_ms, latency_ms);
         remote_frame(live, live.pool.image(slot), meta.t_ns,
                      lock_status(i, st, tracker, segmented, step_ms, s2_ms, latency_ms, run.segments));
         char line[160];
-        std::snprintf(line, sizeof(line), "BAM %s/%s | tam (%.0f, %.0f) | segment %d | q: dung", std::string(name(st.mode)).c_str(),
-                      std::string(name(st.meas.method)).c_str(), st.center_px.x, st.center_px.y, run.segments);
+        std::snprintf(line, sizeof(line), "BAM %s/%s | tam (%.0f, %.0f) | segment %d | LiDAR e %.0f mm %s | q: dung",
+                      std::string(name(st.mode)).c_str(), std::string(name(st.meas.method)).c_str(), st.center_px.x,
+                      st.center_px.y, run.segments, run.align_last_result.e_mm, run.align_last == 1 ? "DAT" : "chua");
         const bool stop = stop_requested(live, live.pool.image(slot), {}, line);
         live.pool.release(slot);
         run.frames_tracked = i + 1;
@@ -814,11 +1021,25 @@ void run_lock(Live& live, Segmenter& seg, Fusion& fusion, LockedTracker& tracker
     UAVP_LOG_INFO(kModule, "Bam: %d khung, %d lan segment (theo LiDAR), %.2f s | flow %d, NCC %d, khong do %d | tu the: %s",
                   run.frames_tracked, run.segments, run.duration_s, run.methods[1], run.methods[2], run.methods[0],
                   std::string(name(run.last_mode)).c_str());
+    UAVP_LOG_INFO(kModule, "LiDAR quet qua vat: dat %d / %d vong (e_max %.1f mm, cong %s), lan dau sau %.2f s",
+                  run.align_ok, run.align_checks, live.lock.align_e_max_mm, live.lock.align_gate ? "BAT" : "tat",
+                  run.t_first_aligned_s);
+    if (wait_scan && run.scan_t0_ns == 0)
+        UAVP_LOG_WARN(kModule, "Khong nhan lenh QUET trong %.0f s: ket qua tu cac khung truoc do (do cao hover)",
+                      live.lock.max_duration_s);
+    else if (std::isfinite(run.t_plane_s))
+        UAVP_LOG_INFO(kModule, "Thoi gian ra vector huong: %.1f s tu luc bat dau tich luy (cua so %.1f s)",
+                      run.t_plane_s, run.plane_window_s);
+    else
+        UAVP_LOG_INFO(kModule, "Chua ra vector huong (PLANE) sau %.1f s tich luy", 
+                      static_cast<double>(mono_ns() - run.scan_t0_ns) / 1e9);
 }
 
 // --- Ket qua --------------------------------------------------------------------------------------------------------
+// pose: tu the camera luc chup anh tham chieu (nullopt: khong co FC) -> them dong ARUCO_S4 cho planA (he W).
 std::vector<std::string> run_aruco(JsonWriter& w, const cv::Mat& image, const SegObject& obj, const FusionResult& r,
-                                   const ArucoConfig& aruco, const CameraModel& camera) {
+                                   const ArucoConfig& aruco, const CameraModel& camera,
+                                   const std::optional<CamPose>& pose_ref) {
     w.key("aruco");
     if (!aruco.check_aruco) {
         UAVP_LOG_INFO(kModule, "ArUco: check_aruco = false (vat khong co ArUco), bo qua");
@@ -829,6 +1050,8 @@ std::vector<std::string> run_aruco(JsonWriter& w, const cv::Mat& image, const Se
     cv::Point3d p;
     if (!check_aruco(image, obj.center_px, aruco, camera, pose, p)) {
         UAVP_LOG_WARN(kModule, "ArUco: khong thay marker %s id %d tren anh cua s4", aruco.dictionary.c_str(), aruco.marker_id);
+        UAVP_LOG_INFO(kModule, "ARUCO_S4 found=0 d_s4_mm=%.1f dist_s4_mm=%.1f plane_s4_mm=%.1f", r.d_mm, r.dist_mm,
+                      r.plane_dist_mm);
         w.begin_object().key("found").value(false).end_object();
         return {"ArUco: khong thay marker"};
     }
@@ -839,6 +1062,25 @@ std::vector<std::string> run_aruco(JsonWriter& w, const cv::Mat& image, const Se
                   pose.reproj_px);
     UAVP_LOG_INFO(kModule, "Sai so s4 - ArUco: d %.2f mm (%.2f%%) | dist %.2f mm | nghieng s4 %.1f do - ArUco %.1f do",
                   r.d_mm - p.z, 100.0 * (r.d_mm - p.z) / p.z, r.dist_mm - dist_a, r.tilt_deg, pose.tilt_deg);
+    {
+        // planA (danh gia he W khi bay): tam vat theo mat phang ArUco (khong LiDAR) + tam marker, trong W.
+        const bool world = pose_ref && pose_ref->has_position;
+        const cv::Point3d m_C(pose.t_CM_mm[0], pose.t_CM_mm[1], pose.t_CM_mm[2]);
+        const cv::Point3d obj_W = world ? to_world(*pose_ref, p) : cv::Point3d(kNaN, kNaN, kNaN);
+        const cv::Point3d m_W = world ? to_world(*pose_ref, m_C) : cv::Point3d(kNaN, kNaN, kNaN);
+        const cv::Point3d diff = r.p_obj_mm - p;
+        // Khoang cach tuyet doi camera -> mat top: thuat toan (LiDAR trong mask, s4 cuoi) vs ArUco tren vat.
+        //   d: doc truc quang tai tam vat | dist: Euclid toi tam vat | plane: vuong goc toi mat top
+        const cv::Vec3d n_M(pose.R_CM(0, 2), pose.R_CM(1, 2), pose.R_CM(2, 2));
+        const double plane_a = std::abs(n_M.dot(pose.t_CM_mm));
+        UAVP_LOG_INFO(kModule,
+                      "ARUCO_S4 found=1 world=%d p_W_mm=%.1f,%.1f,%.1f M_W_mm=%.1f,%.1f,%.1f p_C_mm=%.1f,%.1f,%.1f "
+                      "d_err_mm=%.2f p_err_mm=%.2f reproj_px=%.2f tilt_deg=%.1f d_s4_mm=%.1f d_aruco_mm=%.1f "
+                      "dist_s4_mm=%.1f dist_aruco_mm=%.1f plane_s4_mm=%.1f plane_aruco_mm=%.1f marker_dist_mm=%.1f",
+                      world ? 1 : 0, obj_W.x, obj_W.y, obj_W.z, m_W.x, m_W.y, m_W.z, p.x, p.y, p.z, r.d_mm - p.z,
+                      std::sqrt(diff.dot(diff)), pose.reproj_px, pose.tilt_deg, r.d_mm, p.z, r.dist_mm, dist_a,
+                      r.plane_dist_mm, plane_a, cv::norm(pose.t_CM_mm));
+    }
     char l1[96], l2[160];
     std::snprintf(l1, sizeof(l1), "ArUco: d = %.0f mm | dist = %.0f mm | nghieng %.1f do", p.z, dist_a, pose.tilt_deg);
     std::snprintf(l2, sizeof(l2), "Sai so s4 - ArUco: d %.2f mm (%.2f%%) | dist %.2f mm", r.d_mm - p.z,
@@ -874,7 +1116,9 @@ void write_lock_summary(JsonWriter& w, const LockRun& run, const cv::Point3d& p_
     w.key("p_W_mm");
     p3(p_W_final);
     w.key("frames_tracked").value(run.frames_tracked).key("segments").value(run.segments);
-    w.key("duration_s").num(run.duration_s).key("methods").begin_object();
+    w.key("duration_s").num(run.duration_s).key("align").begin_object().key("checks").value(run.align_checks);
+    w.key("ok").value(run.align_ok).key("first_ok_s").num(run.t_first_aligned_s).key("last_e_mm");
+    w.num(run.align_last_result.e_mm).end_object().key("methods").begin_object();
     for (std::size_t k = 0; k < run.methods.size(); ++k) w.key(name(static_cast<FlowMethod>(k))).value(run.methods[k]);
     w.end_object().key("track_file").value("track.csv").end_object();
 }
@@ -1041,6 +1285,17 @@ Final lock_and_fuse(Live& live, Models& models, Scanned& sc, const Track& track,
     live.monitor.set_phase(Phase::kS4);
     const FusionResult r0 = run_fusion(live, *models.fusion, run.frames, "lan dau, pha chon vat");
     fusion_event(live, "s4_first", r0, cv::Point3d(kNaN, kNaN, kNaN));
+    {
+        const SegObject& obj = run.frames.back().obj;
+        cv::Mat img = draw_track_masks(live.pool.image(slot), std::vector<Track>{track}, live.cfg.camera.center_px());
+        char l1[160];
+        std::snprintf(l1, sizeof(l1), "DETECT #%d %s | tam bbox/mask (%.0f, %.0f) px", track.track_id,
+                      live.cfg.detector.classes.at(track.class_id).c_str(), obj.center_px.x, obj.center_px.y);
+        const std::vector<std::string> lines{l1};
+        draw_title(img, lines);
+        draw_center(img, obj.center_px);
+        save_snapshot(live, "detect.jpg", img);
+    }
     LockedTracker tracker(live.lock, live.cfg.camera, live.body_camera);
     lock_object(live, tracker, track, slot, r0, run);
     fc_event(live, "lock", [&](JsonWriter& e) {
@@ -1062,7 +1317,14 @@ Final lock_and_fuse(Live& live, Models& models, Scanned& sc, const Track& track,
     const cv::Point3d p_W = ref.pose && ref.pose->has_position && std::isfinite(f.r.p_obj_mm.z)
                                 ? to_world(*ref.pose, f.r.p_obj_mm)
                                 : cv::Point3d(kNaN, kNaN, kNaN);
+    if (ref.pose) fill_world(f.r, *ref.pose);
     fusion_event(live, "s4_final", f.r, p_W);
+    if (std::isfinite(f.r.p_obj_W_mm.x))
+        UAVP_LOG_INFO(kModule, "OBJECT p_W_mm=%.1f,%.1f,%.1f normal_W=%.4f,%.4f,%.4f yaw_W_deg=%.1f mode=%s d_mm=%.1f"
+                      " plane_dist_mm=%.1f n_mask_pts=%d window_s=%.1f t_plane_s=%.1f",
+                      f.r.p_obj_W_mm.x, f.r.p_obj_W_mm.y, f.r.p_obj_W_mm.z, f.r.normal_W[0], f.r.normal_W[1],
+                      f.r.normal_W[2], f.r.yaw_W_deg, std::string(name(f.r.mode)).c_str(), f.r.d_mm, f.r.plane_dist_mm,
+                      f.r.n_window_points, f.r.window_used_s, run.t_plane_s);
     if (std::isfinite(p_W.x))
         UAVP_LOG_INFO(kModule, "Tam vat he the gioi p_W = (%.1f, %.1f, %.1f) mm (NED EKF; luc khoa (%.1f, %.1f, %.1f))",
                       p_W.x, p_W.y, p_W.z, run.p_W_lock_mm.x, run.p_W_lock_mm.y, run.p_W_lock_mm.z);
@@ -1071,7 +1333,11 @@ Final lock_and_fuse(Live& live, Models& models, Scanned& sc, const Track& track,
     w.key("lock");
     write_lock_summary(w, run, p_W, live.fc != nullptr);
     f.lines = screen_lines(track, ref.obj, f.r, run, p_W, live.cfg);
-    for (auto& l : run_aruco(w, live.pool.image(run.ref_slot), ref.obj, f.r, aruco, live.cfg.camera))
+    const MaskFrame* seg_ref = nullptr;  // khung cua anh tham chieu (run.ref_slot) = khung segment moi nhat
+    for (const MaskFrame& fr : run.frames)
+        if (fr.segmented && (seg_ref == nullptr || fr.t_ns > seg_ref->t_ns)) seg_ref = &fr;
+    for (auto& l : run_aruco(w, live.pool.image(run.ref_slot), ref.obj, f.r, aruco, live.cfg.camera,
+                             seg_ref != nullptr ? seg_ref->pose : std::nullopt))
         f.lines.push_back(std::move(l));
     return f;
 }
@@ -1093,7 +1359,7 @@ Final fuse_only(Live& live, Models& models, Scanned& sc, const Track& track, Jso
     write_fusion_summary(w, f.r);
     w.key("lock").null();
     f.lines = screen_lines(track, ref.obj, f.r, run, cv::Point3d(kNaN, kNaN, kNaN), live.cfg);
-    for (auto& l : run_aruco(w, live.pool.image(run.ref_slot), ref.obj, f.r, aruco, live.cfg.camera))
+    for (auto& l : run_aruco(w, live.pool.image(run.ref_slot), ref.obj, f.r, aruco, live.cfg.camera, std::nullopt))
         f.lines.push_back(std::move(l));
     return f;
 }
@@ -1120,7 +1386,9 @@ void finish(Live& live, Models& models, Scanned& sc, const ArucoConfig& aruco,
     });
     live.monitor.set_phase(Phase::kSave);
     live.monitor.stop();
-    UAVP_LOG_INFO(kModule, "LD06: %zu goi loi CRC", live.lidar.crc_errors());
+    UAVP_LOG_INFO(kModule, "LD06: %zu goi tot, %zu goi loi CRC (%.1f%%)%s", live.lidar.good_packets(),
+                  live.lidar.crc_errors(), live.lidar.error_percent(),
+                  live.lidar.error_percent() > 2.0 ? " -> CAO: cap / nguon LD06 hoac chuong trinh khac doc cung cong?" : "");
     live.timings.log_summary();
     const double fps = sc.s1_s3_ms > 0.0 ? 1000.0 * sc.frames / sc.s1_s3_ms : 0.0;
     w.key("session").begin_object().key("s1_s3_ms").num(sc.s1_s3_ms).key("frames").value(sc.frames);
@@ -1164,7 +1432,7 @@ int run_main(int argc, char** argv, AppMode mode) {
     const MavlinkConfig mav = mavlink_config(raw["sources"]["mavlink"]);
     const LockConfig lock = lock_config(raw["lock_track"]);
     const BodyCamera body_camera = load_body_camera(lock.calib_T_BC);
-    const CaptureConfig cap = load_capture(raw["calib_K"].as<std::string>());
+    const CaptureConfig cap = load_capture(raw["calib_K"].as<std::string>(), src);
     DisplayConfig display = display_config(raw["display"]);
     const MonitorConfig mon = monitor_config(raw["monitor"]);
     const ArucoConfig aruco = aruco_config(raw["aruco"]);
@@ -1201,16 +1469,50 @@ int run_main(int argc, char** argv, AppMode mode) {
     check_camera(camera, pool, cap, src);
     const std::filesystem::path dir = make_run_dir(cfg.runs_root, full ? "real_time" : "real_time_perception");
     logger->open_file(dir / "run.log");
+    UAVP_LOG_INFO(kModule, "THU MUC KET QUA %s", dir.c_str());
     write_config(dir, raw, args.overrides);
     HwMonitor monitor(mon.period_s, mon.enabled);
     const TerminalKeys keys;
     const std::unique_ptr<RemoteView> remote = rcfg.enabled ? std::make_unique<RemoteView>(rcfg) : nullptr;
     const DistanceConfig dist_used = full ? distance : DistanceConfig{"fixed", distance.fixed_m, 0.0};
-    Live live{camera, lidar.buffer(), fc, cfg, mode, start, dist_used, src, lock, body_camera, display, keys, monitor,
+    // Chan doan rung / mo video: boc camera, moi khung o moi pha (cho lenh, chon vat, bam vat) -> video_diag.csv
+    const VideoDiagConfig vdiag_cfg = raw["video_diag"] ? video_diag_config(raw["video_diag"]) : VideoDiagConfig{};
+    const std::unique_ptr<DiagFrameSource> vdiag =
+        vdiag_cfg.enabled ? std::make_unique<DiagFrameSource>(camera, vdiag_cfg, cfg.camera, fc, body_camera) : nullptr;
+    if (vdiag != nullptr) {
+        vdiag->set_output(dir / "video_diag.csv");
+        UAVP_LOG_INFO(kModule, "Chan doan video: %s (1 / %d khung)", (dir / "video_diag.csv").c_str(), vdiag_cfg.every_n);
+    }
+    IFrameSource& frames = vdiag != nullptr ? static_cast<IFrameSource&>(*vdiag) : static_cast<IFrameSource&>(camera);
+    Live live{frames, lidar.buffer(), fc, cfg, mode, start, dist_used, src, lock, body_camera, display, keys, monitor,
               pool, remote.get(), rcfg.wait_fps, rcfg.max_fps, Timings{}, 0, 0, kTimingHeader, kTrackHeader,
               fc != nullptr ? dir / "fc_events.jsonl" : std::filesystem::path{}};
+    live.run_dir = dir;
     if (fc != nullptr) UAVP_LOG_INFO(kModule, "Log Pixhawk theo quyet dinh: %s", live.fc_log.c_str());
+    const LaunchMarkerConfig marker_cfg = full ? launch_marker_config(raw["launch_marker"]) : LaunchMarkerConfig{};
+    const std::unique_ptr<LaunchMarkerTracker> launch_marker =
+        marker_cfg.enabled
+            ? std::make_unique<LaunchMarkerTracker>(marker_cfg, cfg.camera, body_camera, dir / "launch_marker.csv")
+            : nullptr;
+    live.launch_marker = launch_marker.get();
+    const LaunchMarkerConfig object_cfg = object_marker_config(marker_cfg, aruco);
+    const std::unique_ptr<LaunchMarkerTracker> object_marker =
+        full && object_cfg.enabled
+            ? std::make_unique<LaunchMarkerTracker>(object_cfg, cfg.camera, body_camera, dir / "object_aruco.csv",
+                                                    "OBJARUCO")
+            : nullptr;
+    live.object_marker = object_marker.get();
     const StartInfo info = wait_for_start(live);
+    if (launch_marker != nullptr) {
+        const bool keep = marker_cfg.track_during_scan;
+        UAVP_LOG_INFO(kModule, "ArUco diem cat canh: %d lan do hop le truoc khi quet (%s)", launch_marker->seen(),
+                      keep ? "do tiep khi quet / bam: planA giu vi tri, KHONG chon to giay lam vat" : "dung do tu day");
+        if (!keep) live.launch_marker = nullptr;
+    }
+    if (object_marker != nullptr) {
+        UAVP_LOG_INFO(kModule, "ArUco tren vat: %d lan do hop le truoc khi quet (dung do tu day)", object_marker->seen());
+        live.object_marker = nullptr;
+    }
     if (!info.go) {
         UAVP_LOG_INFO(kModule, "Thoat truoc khi quet");
         return 0;

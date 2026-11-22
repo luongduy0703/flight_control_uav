@@ -36,7 +36,7 @@ void update_state(Track& track, Observation obs, const DecideConfig& cfg) {
     track.mask_small_streak = 0;
     track.observations.push_back(std::move(obs));
     if (track.observations.size() < static_cast<std::size_t>(cfg.n_min)) return;
-    if (median_W_mm(track) > cfg.w_max_mm) {
+    if (cfg.size_abort && median_W_mm(track) > cfg.w_max_mm) {
         track.state = State::kAbort;
         track.reason = Reason::kTooBig;
     } else if (mean_conf(track) < cfg.conf_min) {

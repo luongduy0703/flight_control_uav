@@ -133,6 +133,24 @@ FusionConfig fusion_config(const YAML::Node& f) {
     c.r_max_mm = get<double>(f, "r_max_mm");
     c.scan_angle_min_deg = get<double>(f, "scan_angle_min_deg");
     c.scan_angle_max_deg = get<double>(f, "scan_angle_max_deg");
+    const auto method = get<std::string>(f, "method");
+    if (method == "world") c.method = FusionMethod::kWorld;
+    else if (method == "image") c.method = FusionMethod::kImage;
+    else throw std::runtime_error("s4_fusion.method phai la world hoac image, nhan: " + method);
+    const YAML::Node w = req(f, "world");
+    c.world.window_s = get<double>(w, "window_s");
+    c.world.pose_max_gap_s = get<double>(w, "pose_max_gap_s");
+    c.world.lidar_sigma_mm = get<double>(w, "lidar_sigma_mm");
+    c.world.min_sqrt_l2_mm = get<double>(w, "min_sqrt_l2_mm");
+    c.world.max_normal_sigma_deg = get<double>(w, "max_normal_sigma_deg");
+    c.world.min_inliers = get<int>(w, "min_inliers");
+    if (w["max_window_s"]) c.world.max_window_s = w["max_window_s"].as<double>();
+    if (w["window_step_s"]) c.world.window_step_s = w["window_step_s"].as<double>();
+    if (!(c.world.window_s > 0.0 && c.world.window_s <= 10.0 && c.world.pose_max_gap_s > 0.0 &&
+          c.world.lidar_sigma_mm > 0.0 && c.world.min_sqrt_l2_mm >= 0.0 && c.world.max_normal_sigma_deg > 0.0 &&
+          c.world.min_inliers >= 3 && c.world.max_window_s >= 0.0 && c.world.max_window_s <= 15.0 &&
+          c.world.window_step_s > 0.0))
+        throw std::runtime_error("s4_fusion.world: gia tri ngoai pham vi");
     return c;
 }
 
@@ -225,13 +243,36 @@ CaptureConfig load_capture(const std::filesystem::path& calib_K_path) {
     return c;
 }
 
+CaptureConfig load_capture(const std::filesystem::path& calib_K_path, const SourcesConfig& sources) {
+    CaptureConfig c = load_capture(calib_K_path);
+    const double frame_us = 1e6 / c.fps;
+    if (!(sources.camera_exposure_us >= 0.0) || sources.camera_exposure_us > frame_us)
+        throw std::invalid_argument("sources.camera_exposure_us phai trong [0, " + std::to_string(frame_us) +
+                                    "] us (0 = tu dong; khong dai hon 1 khung)");
+    if (!(sources.camera_analogue_gain == 0.0 ||
+          (sources.camera_analogue_gain >= 1.0 && sources.camera_analogue_gain <= 16.0)))
+        throw std::invalid_argument("sources.camera_analogue_gain phai = 0 (tu dong) hoac trong [1, 16]");
+    c.exposure_us = sources.camera_exposure_us;
+    c.analogue_gain = sources.camera_analogue_gain;
+    return c;
+}
+
 Config config_from_raw(const YAML::Node& raw) {
     const YAML::Node s3 = req(raw, "s3_select");
     Config c;
     c.D_m = get<double>(s3, "D_m");
     c.match_radius_px = get<double>(s3, "match_radius_px");
+    if (s3["bbox_max_mm"]) c.bbox_max_mm = s3["bbox_max_mm"].as<double>();
+    if (s3["match_radius_mm"]) c.match_radius_mm = s3["match_radius_mm"].as<double>();
+    if (s3["world_track"]) c.world_track = s3["world_track"].as<bool>();
+    if (s3["same_object_mm"]) c.same_object_mm = s3["same_object_mm"].as<double>();
+    if (!(c.same_object_mm > 0.0)) throw std::runtime_error("s3_select.same_object_mm phai > 0");
+    if (!(c.match_radius_mm > 0.0)) throw std::runtime_error("s3_select.match_radius_mm phai > 0");
+    if (c.bbox_max_mm < 0.0) throw std::runtime_error("s3_select.bbox_max_mm phai >= 0");
     c.decide = {get<int>(s3, "n_min"), get<double>(s3, "w_max_mm"), get<double>(s3, "conf_min"),
                 get<double>(s3, "mask_min_px"), get<int>(s3, "mask_small_max_frames")};
+    // SAU khi gan c.decide = {...} (gan lai ca struct se dua size_abort ve mac dinh true)
+    if (s3["size_abort"]) c.decide.size_abort = s3["size_abort"].as<bool>();
     c.track = {get<double>(s3, "velocity_alpha")};
     c.cpu.cores = req(req(raw, "cpu"), "cores").as<std::vector<int>>();
     c.max_frames = get<int>(raw, "max_frames");
@@ -256,12 +297,42 @@ SourcesConfig sources_config(const YAML::Node& r) {
     s.lidar_buffer_scans = get<int>(r, "lidar_buffer_scans");
     s.lidar_extra_latency_ms = get<double>(r, "lidar_extra_latency_ms");
     s.scan_timeout_s = get<double>(r, "scan_timeout_s");
+    // tuy chon (file cau hinh cu khong co): 0 = tu dong
+    if (r["camera_exposure_us"]) s.camera_exposure_us = get<double>(r, "camera_exposure_us");
+    if (r["camera_analogue_gain"]) s.camera_analogue_gain = get<double>(r, "camera_analogue_gain");
     return s;
 }
 
 ArucoConfig aruco_config(const YAML::Node& r) {
     return {get<std::string>(r, "dictionary"), get<int>(r, "marker_id"), get<double>(r, "side_mm"),
             get_bool(r, "check_aruco")};
+}
+
+LaunchMarkerConfig launch_marker_config(const YAML::Node& r) {
+    LaunchMarkerConfig m{get_bool(r, "enabled"), get<std::string>(r, "dictionary"), get<int>(r, "marker_id"),
+                         get<double>(r, "side_mm"), get<double>(r, "period_s"), get<double>(r, "max_reproj_px"),
+                         get<double>(r, "max_tilt_deg"), get_bool(r, "track_object")};
+    if (r["track_during_scan"]) m.track_during_scan = get_bool(r, "track_during_scan");
+    if (r["exclude_radius_mm"]) m.exclude_radius_mm = get<double>(r, "exclude_radius_mm");
+    if (!(m.exclude_radius_mm >= 0.0)) throw std::runtime_error("launch_marker.exclude_radius_mm phai >= 0");
+    if (m.side_mm <= 0.0 || m.period_s <= 0.0 || m.max_reproj_px <= 0.0 || m.max_tilt_deg <= 0.0)
+        throw std::runtime_error("launch_marker: side_mm, period_s, max_reproj_px, max_tilt_deg phai > 0");
+    return m;
+}
+
+VideoDiagConfig video_diag_config(const YAML::Node& r) {
+    VideoDiagConfig c;
+    c.enabled = get_bool(r, "enabled");
+    c.every_n = get<int>(r, "every_n");
+    c.crop_px = get<int>(r, "crop_px");
+    c.motion_width_px = get<int>(r, "motion_width_px");
+    c.gyro_half_window_s = get<double>(r, "gyro_half_window_s");
+    c.flush_period_s = get<double>(r, "flush_period_s");
+    c.log_period_s = get<double>(r, "log_period_s");
+    if (c.every_n < 1 || c.crop_px < 32 || c.motion_width_px < 64 || c.gyro_half_window_s <= 0.0 ||
+        c.flush_period_s <= 0.0 || c.log_period_s <= 0.0)
+        throw std::runtime_error("video_diag: every_n >= 1, crop_px >= 32, motion_width_px >= 64, cac chu ky > 0");
+    return c;
 }
 
 DisplayConfig display_config(const YAML::Node& r) {
@@ -288,6 +359,15 @@ LockConfig lock_config(const YAML::Node& r) {
     c.min_segments = get<int>(r, "min_segments");
     c.stop_when_converged = get_bool(r, "stop_when_converged");
     c.warped_masks_for_lidar = get_bool(r, "warped_masks_for_lidar");
+    c.align_gate = get_bool(r, "align_gate");
+    if (r["wait_scan_command"]) c.wait_scan_command = get_bool(r, "wait_scan_command");
+    if (r["scan_max_duration_s"]) c.scan_max_duration_s = r["scan_max_duration_s"].as<double>();
+    if (c.scan_max_duration_s < 0.0) throw std::invalid_argument("lock_track.scan_max_duration_s: phai >= 0");
+    c.align_e_max_mm = get<double>(r, "align_e_max_mm");
+    c.align_max_gap_px = get<double>(r, "align_max_gap_px");
+    c.align_log_period_s = get<double>(r, "align_log_period_s");
+    if (!(c.align_e_max_mm > 0.0) || !(c.align_max_gap_px > 0.0) || !(c.align_log_period_s > 0.0))
+        throw std::invalid_argument("lock_track.align_*: phai > 0");
     return c;
 }
 

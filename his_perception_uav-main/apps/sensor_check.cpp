@@ -211,7 +211,7 @@ int run_main(int argc, char** argv) {
     const SourcesConfig src = sources_config(raw["sources"]);
     const MavlinkConfig mav = mavlink_config(raw["sources"]["mavlink"]);
     const BodyCamera bc = load_body_camera(lock_config(raw["lock_track"]).calib_T_BC);
-    const CaptureConfig cap = load_capture(raw["calib_K"].as<std::string>());
+    const CaptureConfig cap = load_capture(raw["calib_K"].as<std::string>(), src);
     auto logger = std::make_unique<Logger>(Level::kInfo);
     set_logger(logger.get());
     UAVP_LOG_INFO(kModule, "Test cam bien %.0f s, CPU %s", args.seconds, cores.c_str());

@@ -318,6 +318,16 @@ class OffboardControl(Pixhawk):
         health = self.state('health')
         return all(health.get(key) is True for key in self.FLOW_HEALTH)
 
+    def preflight_failures(self):
+        """Names of the MAVSDK health flags that are not True (for error messages)."""
+        try:
+            if self.position_source == 'gps':
+                return [] if self.state('health_all_ok') is True else ['health_all_ok']
+            health = self.state('health')
+        except ValueError as error:
+            return [f'no health telemetry ({error})']
+        return [key for key in self.FLOW_HEALTH if health.get(key) is not True]
+
     def status(self):
         result = super().status()
         result['position_source'] = self.position_source
@@ -533,7 +543,7 @@ class OffboardControl(Pixhawk):
             self._prepare_ground_arm_mode()
             return
         if self.state('flight_mode') == 'HOLD':
-            raise ValueError('PX4 reports preflight not ready')
+            raise ValueError(f'PX4 reports preflight not ready: {self.preflight_failures()}')
         epoch = time.monotonic()
         self._prepare_ground_arm_mode()
         key = 'health_all_ok' if self.position_source == 'gps' else 'health'
@@ -544,7 +554,7 @@ class OffboardControl(Pixhawk):
             if at >= epoch and self.preflight_ok():
                 return
             time.sleep(0.05)
-        raise ValueError('PX4 reports preflight not ready (also in ground HOLD)')
+        raise ValueError(f'PX4 reports preflight not ready (also in ground HOLD): {self.preflight_failures()}')
 
     def arm(self):
         """Arm only: no Offboard plugin, position setpoint or climb command."""
@@ -588,7 +598,7 @@ class OffboardControl(Pixhawk):
             raise ValueError('TAKEOFF requires ON_GROUND and IDLE/disarmed or ARM confirmed in this session')
         if prearmed:
             if not self.preflight_ok():
-                raise ValueError('PX4 reports preflight not ready')
+                raise ValueError(f'PX4 reports preflight not ready: {self.preflight_failures()}')
         else:
             self._ground_preflight()
         p, yaw = self.state('local_ned'), self.state('yaw_deg')
@@ -637,7 +647,8 @@ class OffboardControl(Pixhawk):
                 self.stop_stream()
             raise
 
-    def fly(self, north=None, east=None, explicit=True):
+    def fly(self, north=None, east=None, explicit=True, down=None):
+        """FLY to (north, east) at the current target altitude, or at NED down (m) when down is given."""
         self.require()
         self.refresh()
         if not self.ready_for_fly() or self.offboard is None:
@@ -649,8 +660,8 @@ class OffboardControl(Pixhawk):
         east = number(east, 'y/east', -10000, 10000)
         if not explicit and self.phase != 'FLY_READY':
             raise ValueError('Coordinates are locked in HOLD; select FLY first or use fly x y')
-        target = dict(north_m=north, east_m=east, down_m=self.target['down_m'],
-                      yaw_deg=self.target['yaw_deg'])
+        down = self.target['down_m'] if down is None else number(down, 'down', -10000, 10000)
+        target = dict(north_m=north, east_m=east, down_m=down, yaw_deg=self.target['yaw_deg'])
         self._start_target('FLY', target)
         return True
 

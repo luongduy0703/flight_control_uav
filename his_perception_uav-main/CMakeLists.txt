@@ -74,12 +74,14 @@ add_library(uavp_core STATIC
   src/stages/s3_select/tracker.cpp src/stages/s3_select/measure.cpp src/stages/s3_select/decide.cpp
   src/stages/s3_select/rank.cpp
   src/stages/s4_fusion/lidar.cpp src/stages/s4_fusion/plane.cpp src/stages/s4_fusion/fusion.cpp
+  src/stages/s4_fusion/world_plane.cpp
+  src/stages/s4_fusion/lidar_align.cpp
   src/tracking/world_pose.cpp src/tracking/roi_kalman.cpp src/tracking/roi_flow.cpp src/tracking/locked_tracker.cpp
   src/pipeline/session.cpp src/pipeline/start_gate.cpp
   src/sources/serial_port.cpp src/sources/ld06.cpp src/sources/ld06_buffer.cpp src/sources/mavlink.cpp
   src/sources/fc_shm.cpp
   src/sources/replay_source.cpp
-  src/support/aruco_check.cpp src/support/draw.cpp src/support/hw_monitor.cpp src/support/hw_monitor_thread.cpp
+  src/support/aruco_check.cpp src/support/launch_marker.cpp src/support/video_diag.cpp src/support/draw.cpp src/support/hw_monitor.cpp src/support/hw_monitor_thread.cpp
   src/support/terminal_keys.cpp src/support/cpu_affinity.cpp src/support/remote_view.cpp)
 target_include_directories(uavp_core PUBLIC include)
 target_include_directories(uavp_core SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})  # canh bao cua OpenCV khong tinh
@@ -122,6 +124,15 @@ if(UAVP_WITH_LIBCAMERA)
   add_executable(uavp_sensor_check apps/sensor_check.cpp)  # test nhanh camera + LiDAR + Pixhawk (khong model)
   target_compile_options(uavp_sensor_check PRIVATE ${UAVP_WARNINGS})
   target_link_libraries(uavp_sensor_check PRIVATE uavp_camera)
+
+  add_executable(uavp_camera_view apps/camera_view.cpp)  # chi xem camera tu may tinh (khong model / LD06 / Pixhawk)
+  target_compile_options(uavp_camera_view PRIVATE ${UAVP_WARNINGS})
+  target_link_libraries(uavp_camera_view PRIVATE uavp_camera)
+
+  # camera + LD06 + Pixhawk, khong model: kiem he toa do (handoff_uav) + ArUco diem cat canh (id 1) va ArUco vat (id 0)
+  add_executable(uavp_camera_check apps/camera_check.cpp)
+  target_compile_options(uavp_camera_check PRIVATE ${UAVP_WARNINGS})
+  target_link_libraries(uavp_camera_check PRIVATE uavp_camera)
 endif()
 if(UAVP_WITH_NCNN AND UAVP_WITH_LIBCAMERA)
   # 2 chuong trinh dung chung apps/live_app.cpp: chi 4 stage (do thoi gian / sai so) | ca chuong trinh + Pixhawk
@@ -142,7 +153,11 @@ if(UAVP_BUILD_TESTS)
   add_executable(uavp_tests
     tests/test_boxes.cpp tests/test_detect.cpp tests/test_segment.cpp tests/test_select.cpp
     tests/test_fusion.cpp tests/test_ld06.cpp tests/test_hw_monitor.cpp tests/test_config.cpp
-    tests/test_mavlink.cpp tests/test_tracking.cpp tests/test_remote.cpp tests/test_start.cpp tests/test_parity.cpp)
+    tests/test_mavlink.cpp tests/test_tracking.cpp tests/test_remote.cpp tests/test_start.cpp tests/test_parity.cpp
+    tests/test_world_plane.cpp
+    tests/test_lidar_align.cpp
+    tests/test_launch_marker.cpp
+    tests/test_video_diag.cpp)
   target_compile_options(uavp_tests PRIVATE ${UAVP_WARNINGS})
   target_link_libraries(uavp_tests PRIVATE uavp_core GTest::gtest_main)
   # thu muc goc (configs/, models/) va du lieu parity (tools/dump_parity.py)

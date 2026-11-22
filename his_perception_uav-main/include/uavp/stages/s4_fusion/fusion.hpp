@@ -6,6 +6,8 @@
 //      - moi khung co tu the FC: q = T_CW(t_ref) T_WC(t_f) p   (ca quay lan dich chuyen)
 //      - khong: chi dich ngang theo tam vat tren anh: q_xy = p_xy + d0 (tia_ref - tia(t)), troi do cao -> hang e.
 //   3. RANSAC mat phang (plane.hpp), d = median theo vong roi median giua cac vong.
+// method world (cfg.method, mac dinh): deskew tung diem theo tu the FC + tich luy trong he the gioi + RANSAC 3 diem / PCA
+// (world_plane.hpp). Can `poses` co vi tri phu khung co mask moi nhat; khong co -> dung cach image o tren.
 #pragma once
 
 #include <cstdint>
@@ -19,6 +21,7 @@
 #include "uavp/common/types.hpp"
 #include "uavp/stages/s4_fusion/lidar.hpp"
 #include "uavp/stages/s4_fusion/plane.hpp"
+#include "uavp/stages/s4_fusion/world_plane.hpp"
 
 namespace uavp {
 
@@ -34,7 +37,9 @@ class Fusion {
 public:
     Fusion(FusionConfig cfg, CameraModel camera);
     // frames: cac khung co mask cua vat (thu tu bat ky); scans: vong quet LD06 phu cac khung do.
-    [[nodiscard]] FusionResult operator()(std::span<const MaskFrame> frames, std::span<const Scan> scans);
+    // poses: mau tu the camera tang dan theo thoi gian (method world), rong -> cach image.
+    [[nodiscard]] FusionResult operator()(std::span<const MaskFrame> frames, std::span<const Scan> scans,
+                                          std::span<const CamPoseSample> poses = {});
 
 private:
     struct FrameInfo {
@@ -52,6 +57,12 @@ private:
     void compensate(std::span<const MaskFrame> frames, FusionResult& r);
     void fit(std::span<const MaskFrame> frames, FusionResult& r);
     void set_pose(const SegObject& ref, const PlaneFit& fit, double c_mm, FusionResult& r) const;
+    // method world. false: thieu tu the co vi tri cho khung tham chieu -> goi lai cach image.
+    [[nodiscard]] bool fuse_world(std::span<const MaskFrame> frames, std::span<const Scan> scans,
+                                  std::span<const CamPoseSample> poses, FusionResult& r);
+    void collect_world(std::span<const MaskFrame> frames, std::span<const Scan> scans,
+                       std::span<const CamPoseSample> poses, FusionResult& r);
+    void solve_world(std::span<const MaskFrame> frames, FusionResult& r);
 
     FusionConfig cfg_;
     CameraModel camera_;
@@ -64,6 +75,11 @@ private:
     std::vector<cv::Point2f> uv_;
     PlaneData data_;
     PlaneFit fit_;
+    // method world
+    std::vector<CamPose> frame_pose_;   // tu the camera cua infos_[k]
+    std::vector<uint8_t> frame_ok_;     // infos_[k] co tu the co vi tri
+    std::vector<cv::Vec3d> points_W_;   // diem da deskew, he the gioi (mm), song song r.points_C_mm
+    PlanePca pca_;
 };
 
 }  // namespace uavp

@@ -232,6 +232,8 @@ void FcPoseBuffer::push(const MavMessage& m, int64_t t_rx_ns) {
                 break;
             st_.command_ns = t_rx_ns;
             st_.command_start = c.param[0] >= 0.5f;
+            if (c.param[0] >= 1.5f) st_.scan_ns = t_rx_ns;  // 2 = QUET (van tinh la bat dau, khong phai dung)
+            else if (c.param[0] >= 0.5f && c.param[2] >= 0.5f) st_.floor_down_m = c.param[1];  // bat dau + muc san EKF
             ++st_.command_count;
             break;
         }
@@ -314,6 +316,23 @@ bool FcPoseBuffer::pose_at(int64_t t_ns, FcPose& out) const {
         out.has_range = true;
     }
     return true;
+}
+
+void FcPoseBuffer::attitude_times(int64_t t_lo_ns, int64_t t_hi_ns, std::vector<int64_t>& out) const {
+    out.clear();
+    std::lock_guard lock(mutex_);
+    const std::size_t n = std::min(n_att_, att_.size());
+    int64_t before = 0, after = 0;
+    for (std::size_t k = 0; k < n; ++k) {  // cu -> moi
+        const int64_t t = att_[(n_att_ - n + k) & (att_.size() - 1)].t_ns;
+        if (t < t_lo_ns) before = t;
+        else if (t <= t_hi_ns) out.push_back(t);
+        else if (after == 0) after = t;
+    }
+    if (before != 0) out.insert(out.begin(), before);
+    if (after != 0) out.push_back(after);
+    std::sort(out.begin(), out.end());  // phong khi dong ho FC nhay (FC khoi dong lai)
+    out.erase(std::unique(out.begin(), out.end()), out.end());
 }
 
 std::size_t FcPoseBuffer::n_attitude() const {

@@ -5,6 +5,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "helpers.hpp"
+#include "uavp/pipeline/session.hpp"
 #include "uavp/stages/s3_select.hpp"
 
 using namespace uavp;
@@ -171,4 +172,162 @@ TEST(Tracker, SelectGroupSkipsTrackAtPredictedPosition) {
     tracks[0].vel_px = {30, 0};  // 30 px / khung
     const auto g = select_group(tracks, std::vector<Detection>{det_at(590, 400)}, {960, 540}, 1, 40, 3);
     EXPECT_TRUE(g.empty());  // 590 = du doan khung 3 -> vat da co track
+}
+
+// To giay ArUco diem cat canh: bbox chua tam marker hoac tam bbox gan tam marker -> khong chon.
+TEST(Exclude, BoxContainingOrNearMarkerIsExcluded) {
+    const ExcludeZone z{{800.0, 900.0}, 100.0};
+    Detection paper;
+    paper.x1 = 700.f; paper.y1 = 840.f; paper.x2 = 910.f; paper.y2 = 1040.f;  // chua (800, 900)
+    Detection near_box;
+    near_box.x1 = 850.f; near_box.y1 = 950.f; near_box.x2 = 900.f; near_box.y2 = 1000.f;  // tam (875, 975): cach 106 px
+    Detection object;
+    object.x1 = 250.f; object.y1 = 520.f; object.x2 = 350.f; object.y2 = 610.f;  // hop carton ben trai
+    EXPECT_TRUE(in_zone(paper, z));
+    EXPECT_FALSE(in_zone(near_box, z));
+    EXPECT_TRUE(in_zone(near_box, ExcludeZone{{800.0, 900.0}, 120.0}));
+    EXPECT_FALSE(excluded(object, {z}));
+    EXPECT_FALSE(excluded(paper, {}));
+    EXPECT_EQ(name(Reason::kLaunchMarker), "launch_marker");
+}
+
+// Buoc detection: canh ngan bbox doi ra mm bang D (do cao EKF) -> loai som vat qua to.
+TEST(DetectSize, BboxShortSideInMmAtFloorDistance) {
+    const CameraModel cam = test::camera();
+    const double f = cam.K_px(0, 0);
+    Detection d;
+    d.x1 = 100.f; d.y1 = 100.f; d.x2 = 100.f + static_cast<float>(f * 0.25); d.y2 = 100.f + static_cast<float>(f * 0.10);
+    EXPECT_NEAR(bbox_short_mm(d, 1.0, cam), 100.0, 0.5);  // canh ngan f x 0.1 px tai 1 m = 100 mm
+    EXPECT_NEAR(bbox_short_mm(d, 0.8, cam), 80.0, 0.5);
+    EXPECT_TRUE(std::isnan(bbox_short_mm(d, kNaN, cam)));
+    EXPECT_TRUE(std::isnan(bbox_short_mm(d, 0.0, cam)));
+}
+
+// planA: khoa abort do kich thuoc -> vat 92 mm (> w_max_mm) van OK; W van duoc do.
+TEST(Decide, SizeAbortDisabledKeepsBigObject) {
+    DecideConfig cfg = kCfg;
+    cfg.size_abort = false;
+    Track t;
+    for (int i = 0; i < 5; ++i) update_state(t, obs(92, 0.86f), cfg);
+    EXPECT_EQ(t.state, State::kOk);
+    EXPECT_NEAR(median_W_mm(t), 92.0, 1e-9);
+}
+
+// Bay 2026-11-22 20:07: UAV hover, van toc tam mask (rung) bi ngoai suy qua 10 khung mat mask -> ROI / diem ghep troi
+// ~90 px khoi vat, s1 thay vat nhung khong ghep duoc -> mask_small. Mat mask -> van toc = 0, giu vi tri biet cuoi.
+TEST(Tracker, LostMaskStopsVelocityExtrapolation) {
+    std::vector<Track> tracks;
+    (void)select_group(tracks, std::vector<Detection>{det_at(500, 400)}, {960, 540}, 1, 40, 0);
+    Track& t = tracks[0];
+    update_from_mask(t, {500, 400}, 0, 0.5);
+    update_from_mask(t, {520, 400}, 1, 0.5);  // van toc 10 px / khung
+    ASSERT_NEAR(t.vel_px.x, 10.0, 1e-9);
+    SegmenterConfig cfg;
+    cfg.classes = {"box_top", "bottle_top"};
+    cfg.input_px = 32;
+    cfg.max_det = 10;
+    const std::vector<std::vector<float>> none{{16}, {16}, {16}, {8}, {0.01f}, {0.01f}, {1.f}};  // diem < nguong
+    Segmenter seg(cfg, std::make_unique<test::FakeInfer>(
+                           std::vector<Tensor>{test::tensor2(none), test::tensor3(1, 8, 8, 1.f)}));
+    SegObject obj;
+    for (uint32_t k = 2; k < 12; ++k) EXPECT_FALSE(track_segment(t, k, cv::Mat::zeros(1080, 1920, CV_8UC3), {0.5}, seg, obj));
+    EXPECT_NEAR(t.vel_px.x, 0.0, 1e-9);
+    EXPECT_NEAR(predicted_center(t, 12).x, 520, 1e-9);  // truoc day: 520 + 11 x 10 = 630
+    match(tracks, std::vector<Detection>{det_at(530, 405)}, 40, 12);  // s1 thay lai vat -> ghep duoc
+    EXPECT_EQ(t.last_seen_frame, 12U);
+    EXPECT_NEAR(t.center_px.x, 530, 1e-9);
+}
+
+// --- Che do the gioi (2026-11-22): vat = diem tren san, du doan bang tu the camera luc chup ----------------------
+namespace {
+
+CameraModel test_camera() {
+    CameraModel c;
+    c.K_px = cv::Matx33d(823.3, 0, 960, 0, 823.3, 540, 0, 0, 1);
+    c.dist_coeffs = cv::Mat::zeros(1, 5, CV_64F);
+    return c;
+}
+
+// Camera nhin thang xuong (z_C = xuong), nghieng `tilt_deg` quanh truc Bac, dat o (n, e, z) mm.
+FloorView view_at(const CameraModel& cam, double tilt_deg, cv::Vec3d t_mm, double floor_z_mm = 1000.0) {
+    const double a = tilt_deg * CV_PI / 180.0;
+    const cv::Matx33d Rx(1, 0, 0, 0, std::cos(a), -std::sin(a), 0, std::sin(a), std::cos(a));
+    const cv::Matx33d down(0, -1, 0, 1, 0, 0, 0, 0, 1);  // x_C -> Dong, y_C -> Nam, z_C -> xuong
+    FloorView v;
+    v.pose.R_WC = Rx * down;
+    v.pose.t_WC_mm = t_mm;
+    v.pose.has_position = true;
+    v.floor_z_mm = floor_z_mm;
+    v.camera = &cam;
+    v.radius_mm = 80.0;
+    v.same_mm = 100.0;
+    return v;
+}
+
+Detection det_px(cv::Point2d c) { return det_at(c.x, c.y); }
+
+}  // namespace
+
+TEST(WorldTrack, FloorPointRoundTrip) {
+    const CameraModel cam = test_camera();
+    const FloorView v = view_at(cam, 8.0, {30, -20, 0});
+    const cv::Point3d p{250, -120, 1000};
+    const auto uv = floor_pixel(v, p);
+    ASSERT_TRUE(uv);
+    const auto q = floor_point(v, *uv);
+    ASSERT_TRUE(q);
+    EXPECT_NEAR(q->x, p.x, 1e-6);
+    EXPECT_NEAR(q->y, p.y, 1e-6);
+    EXPECT_NEAR(q->z, 1000.0, 1e-6);
+}
+
+// UAV nghieng 10 do + troi 5 cm giua 2 khung: vat dich > 140 px tren anh. Bam bang px (40 px) mat vat; bam bang diem
+// tren san du doan dung vi tri va ghep lai detection.
+TEST(WorldTrack, PredictsThroughTiltAndMatchesInMm) {
+    const CameraModel cam = test_camera();
+    const cv::Point3d obj{200, 100, 1000};
+    const FloorView v0 = view_at(cam, 0.0, {0, 0, 0});
+    std::vector<Track> tracks;
+    ASSERT_EQ(select_group(tracks, std::vector<Detection>{det_px(*floor_pixel(v0, obj))}, {960, 540}, 1, 40, 0, &v0)
+                  .size(), 1U);
+    Track& t = tracks[0];
+    ASSERT_TRUE(t.has_world);
+    EXPECT_NEAR(t.p_W_mm.x, obj.x, 0.01);  // bbox luu float
+    const FloorView v1 = view_at(cam, 10.0, {50, 0, 0});
+    const cv::Point2d u1 = *floor_pixel(v1, obj);
+    EXPECT_GT(cv::norm(u1 - t.center_px), 140.0);                    // vat dich manh tren anh
+    EXPECT_LT(cv::norm(predicted_center(t, 1, &v1) - u1), 0.01);      // du doan bang tu the: dung cho
+    EXPECT_GT(cv::norm(predicted_center(t, 1) - u1), 140.0);          // khong tu the (px cu): lech
+    match(tracks, std::vector<Detection>{det_px(u1 + cv::Point2d(20, -15))}, 40, 1, &v1);  // ~3 cm tren san
+    EXPECT_EQ(t.last_seen_frame, 1U);
+    // mask o khung 2 (nghieng nguoc): p_W cap nhat theo mask, van toc anh khong dung
+    const FloorView v2 = view_at(cam, -10.0, {40, 10, 0});
+    update_from_mask(t, *floor_pixel(v2, obj), 2, 0.5, &v2);
+    EXPECT_EQ(t.vel_px, cv::Point2d(0, 0));
+    EXPECT_LT(std::hypot(t.p_W_mm.x - obj.x, t.p_W_mm.y - obj.y), 40.0);
+}
+
+// Bay 2026-11-22 20:07: mot hop sinh ra 3 track (#0, #1 ABORT, #2). Tam tren san gan nhau -> CUNG MOT VAT.
+TEST(WorldTrack, CloseCentersAreOneObject) {
+    const CameraModel cam = test_camera();
+    const cv::Point3d obj{200, 100, 1000};
+    const FloorView v0 = view_at(cam, 0.0, {0, 0, 0});
+    std::vector<Track> tracks;
+    (void)select_group(tracks, std::vector<Detection>{det_px(*floor_pixel(v0, obj))}, {960, 540}, 1, 40, 0, &v0);
+    tracks[0].state = State::kAbort;  // vd mask_small
+    // Khung sau: UAV nghieng 12 do, troi; cung hop (lech 60 mm do sai so) + mot vat that khac cach 300 mm.
+    const FloorView v1 = view_at(cam, 12.0, {-60, 40, 0});
+    const cv::Point3d same{obj.x + 60, obj.y, 1000}, other{obj.x, obj.y - 300, 1000};
+    const auto g = select_group(tracks,
+                                std::vector<Detection>{det_px(*floor_pixel(v1, same)), det_px(*floor_pixel(v1, other))},
+                                {960, 540}, 1, 40, 1, &v1);
+    ASSERT_EQ(g.size(), 1U);  // khong tao lai track cho hop da ABORT
+    EXPECT_NEAR(tracks[static_cast<std::size_t>(g[0])].p_W_mm.y, other.y, 0.01);
+    // 2 detection cung khung cach 50 mm tren san -> mot vat (giu cai gan tam anh)
+    std::vector<Track> t2;
+    const cv::Point3d a{0, 0, 1000}, b{0, 50, 1000};
+    const auto g2 = select_group(t2, std::vector<Detection>{det_px(*floor_pixel(v0, b)), det_px(*floor_pixel(v0, a))},
+                                 {960, 540}, 2, 40, 0, &v0);
+    ASSERT_EQ(g2.size(), 1U);
+    EXPECT_NEAR(t2[0].p_W_mm.y, a.y, 0.01);
 }

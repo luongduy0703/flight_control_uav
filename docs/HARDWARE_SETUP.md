@@ -277,3 +277,28 @@ python3 tools/drift_viewer.py --replay session-logs/drift-YYYYMMDDTHHMMSS.csv --
 - Nếu báo "mplot3d unavailable", tool vẫn chạy nhưng hiện góc nhìn từ trên xuống.
   Lỗi này do matplotlib của hệ thống xung đột với bản cài bằng pip. Cách sửa:
   dùng venv, hoặc `sudo apt remove python3-matplotlib`.
+
+### Đo trôi khi hover ở 0.8 m
+
+Viewer tự đo trôi khi máy hover ở 0.8 m phía trên điểm cất cánh. Logic nằm ở
+`tools/hover_drift.py`. Viewer vẫn chỉ nghe, không gửi lệnh: chuyến bay vẫn do console điều khiển.
+
+```bash
+# PC: mở viewer trước
+python3 tools/drift_viewer.py                    # mặc định --hover-height 0.8
+# Pi: console với độ cao 0.8 m, rồi TAKEOFF, chờ 30–60 s, LAND
+.venv/bin/python pi/console.py --profile hardware --position-source flow \
+  --connection udpin://127.0.0.1:14540 --height 0.8 --enable-actuation
+```
+
+- Điểm cất cánh là vị trí cuối cùng khi PX4 còn báo `ON_GROUND` (`EXTENDED_SYS_STATE`).
+  Độ cao được tính so với điểm cất cánh, giống cách console tính.
+- Việc đo bắt đầu khi máy giữ được 0.8 ± 0.15 m, tốc độ ≤ 0.2 m/s, liên tục 2 s.
+  Điểm bắt đầu hover gọi là P0; trôi được tính so với P0.
+- Việc đo kết thúc khi máy rời dải độ cao quá 1 s, khi `LANDING`/`ON_GROUND`, hoặc khi hết `--hover-duration`.
+- Kết quả gồm: độ trôi cuối, độ trôi lớn nhất, RMS, tốc độ trôi (m/phút), độ cao trung bình ± độ lệch chuẩn,
+  và độ cao đo bằng cảm biến khoảng cách. Kết quả được in ra và ghi vào `session-logs/hover-*.json`.
+- Sau khi hạ cánh, tool in "estimated offset from launch". Hãy đánh dấu điểm cất cánh và điểm chạm đất
+  trên sàn, rồi đo bằng thước. Chênh lệch giữa số đo thật và số ước lượng chính là trôi của bộ ước lượng.
+  Lý do: khi hover giữ vị trí, PX4 luôn giữ cho vị trí *ước lượng* đứng yên, nên telemetry không tự thấy
+  được sai số của chính nó.

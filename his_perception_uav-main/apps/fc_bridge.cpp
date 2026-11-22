@@ -108,7 +108,7 @@ void on_command(const MavMessage& m, const MavlinkConfig& mav, Sender& out) {
     }
     out.send(kMsgCommandAck, command_ack_payload(c.command, kMavResultAccepted, m.sysid, m.compid));
     UAVP_LOG_INFO(kModule, "Lenh tu may tinh (sysid %u compid %u): %s perception", m.sysid, m.compid,
-                  c.param[0] >= 0.5f ? "BAT DAU" : "DUNG");
+                  c.param[0] >= 1.5f ? "QUET (da o do cao quet)" : c.param[0] >= 0.5f ? "BAT DAU" : "DUNG");
 }
 
 struct Args {

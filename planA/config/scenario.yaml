@@ -1,0 +1,157 @@
+# =====================================================================================================
+# planA: uoc luong mat top cua vat (vi tri 3D, phap tuyen, yaw) bang UAV hover + camera + LiDAR.
+# Chay tren Pi: python3 planA/run_plan_a.py --config planA/config/scenario.yaml
+#
+# Quy trinh (MOI BUOC CHO LENH, xem muc control):
+#   0. "check": kiem tra ket noi, armed / landed, suc khoe PX4, perception READY.
+#   1. "arm" + "yes" (canh quat quay tren san) -> "takeoff" + "yes" -> goc (0, 0, 0) = SAN duoi Pixhawk luc cat
+#      canh (EKF); hover cao hover_height_m.
+#   2. Hover on dinh hover_stabilize_s: chuong trinh BAO, khong tu lam gi. (perception do ArUco cat canh -> EKF troi)
+#   3. "s_p" (= start_perception) -> detect -> chon vat gan tam anh nhat -> tam bbox -> he the gioi.
+#      Khong thay vat sau perception.detect_timeout_s -> dung perception, UAV GIU HOVER (go land).
+#   4. DE XUAT diem bay (giu do cao) sao cho DUONG QUET LiDAR cat qua TAM BBOX -> "go" de bay / "skip".
+#   5. Toi tren vat: DE XUAT ha xuong approach.final_height_m (0.8 m) -> "go" / "skip" (skip: quet o do cao hien tai).
+#   6. Toi 0.8 m: gui lenh QUET (param1 = 2) -> perception bo khung chup o 1.0 m, bat dau tich luy o 0.8 m.
+#      Xet LiDAR quet qua vat: e_mm = e_px * d / f <= perception.e_max_mm. Chua dat: DE XUAT diem chinh
+#      (toi da approach.max_corrections lan) -> "go" / "skip".
+#   7. Dat: segment mat top + tich luy duong quet; cua so 2 s, mo rong tung 1 s toi perception.max_window_s (10 s)
+#      cho toi khi ra vector huong (PLANE). Het 10 s van khong -> HEIGHT_ONLY. Khoang cach toi mat top = LiDAR (diem
+#      trong mask). (Buoc detect: bbox doi ra mm bang do cao EKF, qua to -> loai ngay.)
+#   8. In ket qua, sai so, thoi gian ra vector huong; HOLD cho "land".
+#   "land" luon chay ngay. exit / Ctrl+C khi dang arm / bay phai xac nhan lan nua. Mat terminal (SSH) -> LAND.
+# =====================================================================================================
+
+flight:
+  connection: udpin://127.0.0.1:14540 # mavlink-routerd (config/mavlink-router.conf) giu TELEM1
+  profile: hardware
+  system_id: 1
+  position_source: flow # optical flow: chi co vi tri cuc bo (EKF NED)
+  site_origin_file: site_origin.json # tinh tu thu muc goc repo; flow can EKF origin de PX4 HOLD
+  hover_height_m: 1.0 # Pixhawk cao hon luc cat canh 1.0 m (camera ~1.1 m tren vat 6 cm: vat o ~27 do / 13 do, ArUco ~27 px)
+  xy_tolerance_m: 0.10 # dung sai toi dich (ArrivalMonitor)
+  z_tolerance_m: 0.08 # < buoc ha 0.2 m: toi noi la PX4 HOLD giu do cao luc do, dung sai lon thi ha khong du
+  yaw_tolerance_deg: 10.0
+  settle_time_s: 2.0 # o trong dung sai lien tuc bao lau thi coi la toi noi -> PX4 HOLD
+  target_timeout_s: 30.0
+  hover_stabilize_s: 5.0 # sau khi toi do cao hover: cho them de UAV on dinh (= cua so do ArUco / EKF troi)
+  hover_max_speed_m_s: 0.10 # toc do ngang + dung (trung binh 1 s) phai nho hon nguong nay
+  max_target_distance_m: 1.5 # an toan: khong gui setpoint xa goc hon 1.5 m
+  control_cores: "0,1" # CPU cho dieu khien; perception dung cpu.cores rieng (2, 3)
+  auto_land: false # true: tu ha canh sau khi co ket qua; false: cho lenh land
+
+control: # AN TOAN: chuong trinh khong tu bay. Tat (false) chi khi da bay thu nhieu lan va hieu ro kich ban
+  confirm_arm: true # arm -> phai go "yes" (canh quat quay)
+  confirm_takeoff: true # takeoff -> phai go "yes"
+  require_arm_before_takeoff: true # takeoff bi tu choi neu chua arm (khong tu arm trong takeoff)
+  confirm_moves: true # moi setpoint (bay toi vat, chinh LiDAR, ha do cao) chi DE XUAT: go "go" de bay, "skip" bo qua
+  confirm_timeout_s: 8 # "yes" phai den trong 8 s (PX4 tu disarm ~10 s sau ARM tren san)
+
+frame: # he toa do kich ban (in ket qua, ground truth)
+  axes: launch_heading # launch_heading: x = huong mui UAV luc cat canh, y = ben phai, z = xuong
+                       # ned: x = Bac, y = Dong, z = xuong (giong EKF Pixhawk)
+  z_source: ekf # ekf: z perception = EKF (cung he voi setpoint); z_kich_ban = z - (z FC luc cat canh + fc_above_ground_m)
+                # -> SAN = 0 ngay duoi Pixhawk luc cat canh (giong handoff_uav frames.world_origin_in_ekf)
+                # rangefinder: z perception = -do cao rangefinder (san = 0). LUU Y: khi UAV o tren vat, rangefinder
+                # do toi mat vat -> z sai mot doan bang chieu cao vat.
+  fc_above_ground_m: 0.25 # tam Pixhawk cao hon san khi UAV dat tren SAN luc cat canh (thuoc 2026-11-18). Cat canh
+                          # tu gia / hop thi doi = do cao Pixhawk tren SAN. Chi dung cho z_source: ekf.
+
+approach:
+  target: bbox # bbox: bay toi tam bbox detect cua vat selected (TARGET bbox_p_W_mm) | mask: tam mask (s4 lan dau)
+  lidar_line: true # true: dat UAV sao cho DUONG QUET LiDAR cat qua tam vat (tinh tu T_CL + T_BC, do sau camera -> vat)
+                   # false: dat tam than UAV tren tam vat
+  calib_T_CL: configs/calib/T_CL.yaml # tinh tu perception.dir (cung file perception dung)
+  calib_T_BC: configs/calib/T_BC.yaml
+  body_offset_m: [0.0, 0.0] # dich them (x, y he kich ban), cong vao sau khi dat duong LiDAR qua tam vat
+  wait_after_arrival_s: 1.0 # toi noi -> cho them truoc khi xet ALIGN
+  align_wait_s: 3.0 # xet ALIGN trong 3 s; chua dat thi chinh vi tri
+  max_corrections: 3
+  min_correction_m: 0.02 # lech nho hon: khong chinh (trong sai so hover)
+  max_correction_m: 0.30 # 1 lan chinh khong qua 30 cm
+  final_height_m: 0.8 # toi tren vat: ha xuong do cao nay (tinh nhu hover_height_m) ROI MOI QUET. null: quet o hover
+
+perception:
+  dir: ~/uavp_planA # du an perception tren Pi (build/uavp_real_time)
+  config: configs/run/real_time.yaml
+  ready_timeout_s: 90 # cho perception mo camera / LiDAR / model
+  result_timeout_s: 180 # tu start_perception toi khi co ket qua (gom 2 lan "go": bay toi vat + ha 0.8 m)
+  e_max_mm: 15.0 # nguong e_mm = e_px * d / f (LiDAR quet qua tam vat)
+  lock_max_duration_s: 120 # bam vat toi da khi CHO lenh QUET (bay toi vat + ha do cao + cho "go")
+  min_segments: 5 # so lan segment khi LiDAR da quet qua vat truoc khi dung som
+  window_s: 2.0 # cua so tich luy duong quet ban dau (s4 fusion.world.window_s)
+  max_window_s: 10.0 # mo rong cua so (buoc 1 s) toi khi ra vector huong; qua 10 s -> HEIGHT_ONLY
+  scan_max_s: 12.0 # pha tich luy sau lenh QUET dai toi da 12 s (>= max_window_s)
+  size_abort: false # false: KHOA abort do kich thuoc (s3 too_big + loc bbox); W van do + log. true: loai vat > 80 mm
+  match_radius_px: 80 # du phong khi perception khong co tu the FC: ghep detection voi track theo px
+  match_radius_mm: 80 # bam vat theo the gioi: ghep detection voi track neu cach diem tren san <= 80 mm
+  same_object_mm: 100 # 2 tam tren san cach <= 100 mm -> CUNG MOT VAT (khong tao track moi, ke ca vat da ABORT)
+  auto_start: false # true: tu gui start_perception sau hover_stabilize_s hover on dinh. false: go lenh tay
+  detect_timeout_s: 30 # tu start_perception: chua co TARGET sau 30 s -> STOP perception, UAV giu hover
+  require_hover: false # planA tu kiem tra hover on dinh truoc khi gui lenh. true: perception kiem them start.modes
+                       # (hien la ma ArduCopter 5 / 16 -> PX4 HOLD khong khop, perception se cho mai)
+  fp16: true # trong so + activation cua s1 detect / s2 segment LUU fp16 trong RAM (ncnn use_fp16_storage), cung model
+  # da train (fp32 -> fp16 luc nap). Pi 4 (A72) khong tinh fp16, chi giam bang thong RAM: do 2026-11-14 s1 711 ms (fp16)
+  # so voi ~1150 ms (fp32, log 2026-11-22). false: fp32 nhu cu
+  set: [] # ghi de them, vd ["remote.max_fps=5"]
+
+ground_truth: # tam mat top cua vat that, he kich ban (m): goc = SAN ngay duoi Pixhawk luc cat canh
+  x_m: 0.635
+  y_m: 0.255
+  z_m: null # = -(chieu cao mat top so voi san). null: chua do -> chi tinh sai so 2D (x, y)
+
+marker: # ArUco diem cat canh (id 1). KHONG dua vao EKF Pixhawk, KHONG bao gio la vat gap.
+  # (1) LAN DAU thay (min_samples mau co tu the FC) -> co dinh lam he local: thuoc (ground_truth tu tam marker) -> W,
+  #     in "SAI SO THEO ArUco LAN DAU". (2) Giu vi tri hover theo marker (hold). (3) perception bo to giay marker khi chon vat.
+  # Them: EKF troi = marker trong EKF luc hover - luc dat; danh gia cu qua vi tri dat UAV (camera so voi marker + T_BC).
+  # In: python3 planA/make_launch_marker.py -> planA/markers/. Dan phang tren san, ngay duoi CAMERA khi UAV dat xuong,
+  # mui ten +x cung huong mui UAV. Perception do marker tu luc READY -> cat canh -> hover, dung khi start_perception.
+  enabled: true
+  dictionary: DICT_4X4_50
+  marker_id: 1 # KHAC marker tren vat (id 0)
+  side_mm: 100.0 # canh ngoai VIEN DEN DO BANG THUOC tren ban in (may in hay thu nho: 1 mm sai ~ 1 % khoang cach)
+  period_s: 0.2 # do 5 lan / s
+  max_reproj_px: 2.0
+  max_tilt_deg: 15.0
+  hover_window_s: 5.0 # uoc luong marker trong EKF tu 5 s hover truoc start_perception -> EKF troi (dat -> hover)
+  min_samples: 5
+  launch_window_s: 2.0 # kiem tra vi tri luc dat UAV: cac lan thay marker trong 2 s truoc lenh takeoff
+  launch_max_offset_m: 0.03 # camera lech tam marker toi da 3 cm
+  launch_max_yaw_deg: 5.0 # mui UAV lech mui ten toi da 5 do
+  require_at_takeoff: false # false: takeoff bay luon, chi in kiem tra marker (khong thay -> khong co sai so thuoc). true: tu choi takeoff
+  track_during_scan: true # perception do marker tiep khi quet / bam vat (can cho hold khi SCANNING + loai to giay)
+  exclude_radius_mm: 150 # detection co bbox chua tam marker / tam cach marker < 150 mm -> KHONG chon lam vat (0 = tat)
+  hold: # giu UAV tren san theo marker khi hover tai cho (STABILIZE, WAIT_START, SCANNING). TU DONG, buoc nho:
+    # EKF troi d (marker co dinh "dich" trong EKF so voi lan dau) -> setpoint hover = goc + d. Dung khi co de xuat bay /
+    # dang bay toi vat / ha do cao. d > max_total_m -> KHONG chinh, in canh bao (nghi do sai).
+    enabled: true
+    deadband_m: 0.05 # lech < 5 cm: khong chinh (nhieu do marker ~1-2 cm)
+    max_step_m: 0.10 # moi lan chinh toi da 10 cm (<= 0.2)
+    max_total_m: 0.30 # tong lech khoi goc toi da 30 cm (<= 0.5)
+    period_s: 3.0 # it nhat 3 s giua 2 lan chinh (moi lan PX4 HOLD -> Offboard -> toi noi)
+    window_s: 1.5 # uoc luong marker hien tai tu cac lan thay trong 1.5 s gan nhat
+    min_samples: 3
+    max_spread_m: 0.05 # cac lan thay lech nhau > 5 cm -> khong tin, khong chinh
+  ground_truth: # tam mat top cua vat, DO BANG THUOC tu tam marker (m): x theo mui ten, y ben phai, z = -chieu cao
+    x_m: 0.425 # do thuoc 2026-11-22: 42.5 cm theo mui ten +x
+    y_m: -0.220 # 22 cm ve ben TRAI (y duong = phai)
+    z_m: -0.061 # mat top cao 61 mm so voi san (z huong xuong -> am). DO LAI neu doi vat
+
+video_diag: # chan doan rung / mo video: perception do moi khung (do net, dich anh, lech rolling shutter, phoi sang,
+  # rot khung, toc do quay tu FC) tu luc cho lenh tren san -> arm -> bay. Cuoi lan chay: video_diag_report.txt/.json
+  # (+ .png) trong thu muc log. Phan tich lai tren laptop: python3 planA/video_diag.py <thu muc log>
+  # Lay doan doi chung: sau "Perception READY" de UAV TAT motor ~5 s, roi arm cho 5-10 s tren san, roi takeoff.
+  enabled: false # TAT (2026-11-22: da du so lieu, xem runs_pi/planA_20261122T*); bat lai: true
+  every_n: 1 # do 1 / every_n khung (~3 ms / khung tren Pi 4; tang len 2-3 neu perception cham)
+
+imu_log: # ghi IMU Pixhawk (pi/imu_logger.py) tu luc ket noi toi luc thoat -> imu_*.csv + imu_diag_report.txt/.json/.png
+  # Xin PX4 tang tan so tin (MAV_CMD_SET_MESSAGE_INTERVAL, chi telemetry), tra ve mac dinh khi thoat.
+  # Phan tich lai tren laptop: python3 planA/imu_diag.py <thu muc log>
+  enabled: false # TAT (2026-11-22: da du so lieu); bat lai: true
+  highres_hz: 200 # HIGHRES_IMU (gyro + accel): Nyquist 100 Hz; rung canh quat cao hon se bi gap (alias)
+  vibration_hz: 10 # VIBRATION: chi so rung PX4 tu accel CHUA loc + dem clipping
+  motors_hz: 10 # SERVO_OUTPUT_RAW: muc motor (tan so rung canh quat tang theo toc do motor)
+  camera_f_px: 823.3 # f camera (K_1920x1080.yaml) de doi rung goc -> px tren anh
+  readout_ms: 20 # thoi gian doc het 1 anh cua IMX708 (uoc luong) -> lech rolling shutter
+
+logging:
+  dir: planA/logs # tinh tu thu muc goc repo; moi lan chay: planA/logs/<ngay-gio>/

@@ -14,20 +14,26 @@
 namespace uavp {
 
 enum class State : uint8_t { kDefer, kOk, kAbort, kCount };
-enum class Reason : uint8_t { kNone, kTooBig, kLowConf, kMaskSmall, kCount };
+enum class Reason : uint8_t { kNone, kTooBig, kLowConf, kMaskSmall, kLaunchMarker, kCount };
 enum class FusionStatus : uint8_t { kOk, kLowConfidence, kInsufficient, kCount };
+// Cach s4 da tinh mat top: image (cach cu), plane (world: du dieu kien, phap tuyen tu PCA), height_only (world: chua du
+// dieu kien, phap tuyen theo trong luc, chi tin do cao).
+enum class PlaneMode : uint8_t { kImage, kPlane, kHeightOnly, kCount };
 
 // Ten trong log / result.json, giong ban Python (bang tra theo chi so enum, CPP_RULES.md muc 7).
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(State::kCount)> kStateNames{"defer", "ok",
                                                                                                   "abort"};
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(Reason::kCount)> kReasonNames{
-    "", "too_big", "low_conf", "mask_small"};
+    "", "too_big", "low_conf", "mask_small", "launch_marker"};
 inline constexpr std::array<std::string_view, static_cast<std::size_t>(FusionStatus::kCount)> kFusionNames{
     "ok", "low_confidence", "insufficient"};
 
 constexpr std::string_view name(State s) noexcept { return kStateNames[static_cast<std::size_t>(s)]; }
 constexpr std::string_view name(Reason r) noexcept { return kReasonNames[static_cast<std::size_t>(r)]; }
 constexpr std::string_view name(FusionStatus f) noexcept { return kFusionNames[static_cast<std::size_t>(f)]; }
+inline constexpr std::array<std::string_view, static_cast<std::size_t>(PlaneMode::kCount)> kPlaneModeNames{
+    "image", "plane", "height_only"};
+constexpr std::string_view name(PlaneMode m) noexcept { return kPlaneModeNames[static_cast<std::size_t>(m)]; }
 
 // Mot vat detector tim thay (anh goc, px). 24 byte: 2–3 detection mot dong cache.
 struct Detection {
@@ -87,6 +93,10 @@ struct Track {
     State state{State::kDefer};
     Reason reason{Reason::kNone};
     bool has_mask{false};                   // da co it nhat mot mask (co last_mask_center_px)
+    // Che do the gioi (co tu the FC): vat = diem tren mat san p_W (NED EKF, mm) cua tam bbox. Moi khung chieu p_W len anh
+    // bang tu the camera LUC CHUP -> tam ROI du doan; ghep detection theo khoang cach tren san (mm). Khong dung vel_px.
+    cv::Point3d p_W_mm{0.0, 0.0, 0.0};
+    bool has_world{false};
 };
 
 // Mot vong quet LD06 (THO, chua doi goc / hieu chinh tam). Mang song song (SoA), cap phat lai khi dung lai slot.
@@ -145,6 +155,19 @@ struct FusionResult {
     double d2_mm{kNaN};                      // mat phang song song thu 2 (tai tam), nan neu khong co
     double spread_w_mm{kNaN};                // trai diem vuong goc mat quet (p90 - p10) sau bu chuyen dong
     double drift_mm_s{kNaN};                 // troi do cao UAV uoc luong (mm/s), nan neu khong dung
+    // --- method world (world_plane.hpp); nan / 0 khi dung image ---
+    cv::Point3d p_obj_W_mm{kNaN, kNaN, kNaN};  // tam mat top trong he the gioi (NED EKF)
+    cv::Vec3d normal_W{kNaN, kNaN, kNaN};      // phap tuyen mat top he the gioi (huong xuong, ra xa camera)
+    std::array<double, 3> lambda_mm2{kNaN, kNaN, kNaN};  // tri rieng PCA lambda1 >= lambda2 >= lambda3
+    double sqrt_l2_mm{kNaN};                 // do trai vuong goc duong quet
+    double sigma_theta_deg{kNaN};            // sai so phap tuyen quanh truc yeu
+    double n_required{kNaN};                 // so inlier can de sigma_theta <= max_normal_sigma_deg
+    int n_pose_missing{0};                   // diem bo vi khong noi suy duoc tu the FC luc t_i
+    double window_used_s{kNaN};              // cua so tich luy (s) da dung: PLANE = thoi gian can de ra vector huong
+    int n_window_points{0};                  // so diem trong mask nam trong cua so do
+    double plane_dist_mm{kNaN};              // khoang cach vuong goc camera -> mat top (LiDAR, diem trong mask)
+    cv::Vec3d axis_x_W{kNaN, kNaN, kNaN};      // canh dai mat top trong he the gioi (fill_world)
+    double yaw_W_deg{kNaN};                  // huong canh dai so voi Bac (atan2(E, N)), [0, 180)
     int64_t t_image_ns{0};                   // thoi diem khung tham chieu
     int64_t t_lidar_first_ns{0};             // khong co diem -> 0
     int64_t t_lidar_last_ns{0};
@@ -154,6 +177,7 @@ struct FusionResult {
     int n_inliers{0};
     int n2_inliers{0};
     FusionStatus status{FusionStatus::kInsufficient};
+    PlaneMode mode{PlaneMode::kImage};
     bool ambiguous{false};
     bool normal_observable{false};           // do duoc nghieng ca 2 huong (UAV troi du vuong goc mat quet)
     bool pose_compensated{false};            // bu chuyen dong bang tu the FC (khong: bang dich chuyen tam vat tren anh)

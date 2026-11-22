@@ -70,6 +70,7 @@ struct DecideConfig {
     double conf_min{0.7};
     double mask_min_px{5.0};
     int mask_small_max_frames{10};
+    bool size_abort{true};  // false: KHONG abort too_big / khong loc bbox_max_mm (W van do + log). planA tat.
 };
 
 // s3 tracking (configs/stages/s3_select.yaml): s1 chi chay khi chua co vat / mat vat; cac khung khac s2 chay tren ROI
@@ -95,8 +96,30 @@ struct Extrinsics {
     bool angle_clockwise{true};
 };
 
+// s4 method: world = deskew theo tu the FC + RANSAC 3 diem / PCA trong he the gioi (world_plane.hpp);
+// image = bu chuyen dong bang anh / tu the khung, RANSAC z = a u + b w + c (plane.hpp, giong ban Python).
+enum class FusionMethod : uint8_t { kWorld, kImage, kCount };
+
+// s4_fusion.world: tham so cua method world (configs/stages/s4_fusion.yaml).
+struct WorldPlaneConfig {
+    double window_s{2.0};              // cua so truot tich luy diem truoc khung co mask moi nhat
+    double pose_max_gap_s{0.05};       // mau tu the FC bao quanh t_i cach xa hon -> bo diem (ATTITUDE >= 20 Hz)
+    double lidar_sigma_mm{5.0};        // nhieu LiDAR theo phap tuyen (tau RANSAC = ransac_tau_mm ~ 2 sigma)
+    double min_sqrt_l2_mm{10.0};       // do trai sqrt(lambda2) toi thieu (phu deu dai R: R / sqrt(12))
+    double max_normal_sigma_deg{3.0};  // sai so phap tuyen quanh truc yeu toi da
+    int min_inliers{40};
+    // Cua so THICH UNG (2026-11-22): thu window_s, window_s + window_step_s, ... toi max_window_s; cua so dau tien dat
+    // accept_plane -> PLANE (ghi window_used_s = thoi gian tich luy can de ra vector huong). Het max_window_s van
+    // khong dat -> HEIGHT_ONLY tren cua so nho nhat du diem. max_window_s 0 = khong mo rong (= window_s).
+    double max_window_s{0.0};
+    double window_step_s{1.0};
+    [[nodiscard]] double effective_max_window_s() const noexcept { return max_window_s > window_s ? max_window_s : window_s; }
+};
+
 // s4 (configs/stages/s4_fusion.yaml): LiDAR quanh tung khung co mask -> RANSAC mat phang top (bu chuyen dong UAV).
 struct FusionConfig {
+    WorldPlaneConfig world;
+    FusionMethod method{FusionMethod::kWorld};
     Extrinsics extrinsics;
     int min_pts{40};
     double lidar_window_s{0.1};         // diem LiDAR cach khung co mask gan nhat <= 0.1 s moi dung
@@ -126,6 +149,8 @@ struct CaptureConfig {
     double lens_position{1.25};
     int rotate_deg{180};
     double fps{30.0};
+    double exposure_us{0.0};    // > 0: KHOA thoi gian phoi sang (us); 0: tu dong (AE)
+    double analogue_gain{0.0};  // > 0: KHOA gain analog; 0: tu dong
 };
 
 struct SourcesConfig {
@@ -140,6 +165,8 @@ struct SourcesConfig {
     int lidar_buffer_scans{600};
     double lidar_extra_latency_ms{0.0};
     double scan_timeout_s{1.0};
+    double camera_exposure_us{0.0};    // sources.camera_exposure_us (khong co khoa = 0 = tu dong)
+    double camera_analogue_gain{0.0};  // sources.camera_analogue_gain (khong co khoa = 0 = tu dong)
 };
 
 struct ArucoConfig {
@@ -147,6 +174,31 @@ struct ArucoConfig {
     int marker_id{0};
     double side_mm{36.4};
     bool check_aruco{false};
+};
+
+// ArUco diem cat canh (planA, include/uavp/support/launch_marker.hpp). Chi de danh gia, khong dieu khien.
+struct LaunchMarkerConfig {
+    bool enabled{false};
+    std::string dictionary;
+    int marker_id{1};
+    double side_mm{100.0};      // canh ngoai VIEN DEN do bang thuoc tren ban in
+    double period_s{0.2};       // chu ky do (ArUco tren anh 1920x1080 ton CPU)
+    double max_reproj_px{2.0};  // loai lan do co sai so chieu lai lon
+    double max_tilt_deg{15.0};  // loai lan do ma mat phang marker lech phuong ngang (IPPE lat nghiem)
+    bool track_object{false};   // them: bam ArUco TREN VAT (muc aruco) cung luc -> dong OBJARUCO (danh gia he W khi bay)
+    bool track_during_scan{true};   // do tiep marker khi quet / bam vat (planA giu vi tri theo marker, loai to giay)
+    double exclude_radius_mm{150.0};  // > 0: detection co bbox chua tam marker / tam cach tam marker < r -> KHONG chon
+};
+
+// Chan doan video (include/uavp/support/video_diag.hpp): do moi khung de tim nguon rung / mo. Chi ghi log.
+struct VideoDiagConfig {
+    bool enabled{false};
+    int every_n{1};               // do 1 / every_n khung (giam tai CPU)
+    int crop_px{256};             // o vuong giua anh (anh goc) de do do net
+    int motion_width_px{320};     // anh thu nho de do dich anh giua 2 khung (phase correlation)
+    double gyro_half_window_s{0.01};  // toc do quay = goc quay giua t - h va t + h (2 mau ATTITUDE)
+    double flush_period_s{1.0};   // ghi video_diag.csv moi 1 s (khong mat du lieu khi bi dung)
+    double log_period_s{5.0};     // dong VIDEO tom tat trong log
 };
 
 struct DisplayConfig {
@@ -181,6 +233,16 @@ struct LockConfig {
     int min_segments{5};             // it nhat 5 lan segment (theo LiDAR) truoc khi dung som
     bool stop_when_converged{true};  // s4 da ok + do duoc nghieng -> dung
     bool warped_masks_for_lidar{false};  // loc LiDAR ca bang mask doi (giua 2 lan segment)
+    // Dieu kien LiDAR quet qua vat (lidar_align.hpp): chi segment + tich luy khi e_mm <= align_e_max_mm.
+    bool align_gate{false};
+    // planA (2026-11-22): cho lenh QUET (COMMAND_LONG param1 = 2, gui khi UAV da ha xuong do cao quet). Truoc lenh: van
+    // bam vat nhung KHONG kiem hoi tu; luc nhan lenh: bo khung co mask cu (do o do cao khac), max_duration_s tinh lai
+    // tu luc nay.
+    bool wait_scan_command{false};
+    double scan_max_duration_s{0.0};  // gioi han pha tich luy sau lenh QUET (0 = max_duration_s)
+    double align_e_max_mm{15.0};
+    double align_max_gap_px{40.0};   // 2 diem LiDAR lien tiep cach xa hon tren anh: khong noi thanh doan
+    double align_log_period_s{0.5};  // in dong ALIGN (planA doc) toi da moi 0.5 s, va moi khi doi trang thai
 };
 
 // Pixhawk qua MAVLink (run/real_time.yaml: sources.mavlink).
@@ -247,7 +309,15 @@ struct Config {
     CameraModel camera;
     std::filesystem::path runs_root;
     double D_m{0.66};
+    // Loai som O BUOC DETECTION (truoc segment): canh ngan bbox (px) x D / f > bbox_max_mm -> bo detection (qua to).
+    // D = khoang cach camera -> san luc bat dau (planA: tu do cao EKF). 0 = tat.
+    double bbox_max_mm{0.0};
     double match_radius_px{40.0};
+    // Ghep detection / nhan "cung mot vat" theo khoang cach tren mat san (mm) khi co tu the FC (UAV nghieng 10 do lam
+    // vat dich ~145 px tren anh, khong bam duoc bang px). world_track = false: chi dung px + van toc nhu cu.
+    double match_radius_mm{80.0};
+    double same_object_mm{100.0};  // 2 tam tren san cach <= same_object_mm -> cung mot vat (khong tao track moi)
+    bool world_track{true};
     int max_frames{100};
 };
 
@@ -258,8 +328,12 @@ struct Config {
 [[nodiscard]] CameraModel load_camera(const std::filesystem::path& path);
 [[nodiscard]] Extrinsics load_extrinsics(const std::filesystem::path& path);
 [[nodiscard]] CaptureConfig load_capture(const std::filesystem::path& calib_K_path);
+// Nhu tren + phoi sang / gain khoa tu sources (kiem tra: phoi sang <= 1 khung, gain 1..16).
+[[nodiscard]] CaptureConfig load_capture(const std::filesystem::path& calib_K_path, const SourcesConfig& sources);
 [[nodiscard]] SourcesConfig sources_config(const YAML::Node& r);
 [[nodiscard]] ArucoConfig aruco_config(const YAML::Node& r);
+[[nodiscard]] LaunchMarkerConfig launch_marker_config(const YAML::Node& r);
+[[nodiscard]] VideoDiagConfig video_diag_config(const YAML::Node& r);
 [[nodiscard]] DisplayConfig display_config(const YAML::Node& r);
 [[nodiscard]] MonitorConfig monitor_config(const YAML::Node& r);
 [[nodiscard]] ModelConfig model_config(const YAML::Node& r);

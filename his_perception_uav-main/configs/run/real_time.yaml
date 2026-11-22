@@ -51,6 +51,10 @@ sources:
   connect_timeout_s: 5.0 # cho vong quet LD06 dau tien qua 5 s -> loi
   frame_timeout_s: 5.0 # cho khung camera qua 5 s -> loi
   lens_position_tol: 0.02 # |LensPosition khung dau - lens_position file K| lon hon -> loi
+  camera_exposure_us: 2500 # KHOA phoi sang 2.5 ms (0 = tu dong). Tu dong tren Pi keo len ~30 ms (ca khung) -> UAV
+  # rung 0.25-0.35 rad/s lam mo ~6 px (log planA 2026-11-22); 2.5 ms con ~0.5 px. Toi da = 1 khung (33333 us o 30 fps)
+  camera_analogue_gain: 7.0 # KHOA gain analog 7 (0 = tu dong; IMX708: 1-16). Bu phoi sang ngan: khi bay do sang
+  # 198 o 28.5 ms x gain 1.1 -> 2.5 ms x 7 ~ do sang 110-120. Anh toi / nhieu: tang gain (<= 10) hoac them den
   clock_skew_max_s: 0.5 # khung dau: luc nhan - SensorTimestamp (da doi ve monotonic) ngoai [0, 0.5] s -> loi
   lidar_port: /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_base_core-if00-port0 # LD06
   # (CP2102) theo by-id: ten /dev/ttyUSBx doi theo thu tu cam USB. Kiem tra: ls -l /dev/serial/by-id/
@@ -115,3 +119,32 @@ aruco: # kiem tra sai so s4 bang ArUco dan tren mat tren vat (in: print/aruco_4x
   marker_id: 0
   side_mm: 36.4 # canh ngoai VIEN DEN (khong tinh vien trang). Mau 40 mm in ra 91 % -> 36.4 mm. Sai 1 mm ~ sai 2.7 %
   # khoang cach ArUco. Dan marker canh duong quet LiDAR (o den / trang lam LD06 do lech), phang tren mat tren.
+
+video_diag: # chan doan rung / mo video (planA bat): moi khung -> <thu muc ket qua>/video_diag.csv
+  # Do: khoang khung, phoi sang, gain, do net (Laplacian o giua anh), dich anh giua 2 khung + lech tren / duoi anh
+  # (rolling shutter), toc do quay tu ATTITUDE, mo du doan = |w| f t_phoisang, trang thai FC (armed, landed).
+  # Phan tich: python3 planA/video_diag.py <log planA hoac video_diag.csv>
+  enabled: false
+  every_n: 1 # do 1 / every_n khung (moi khung ~3 ms tren Pi 4)
+  crop_px: 256 # o vuong giua anh goc de do do net
+  motion_width_px: 320 # anh thu nho do dich anh (phase correlation)
+  gyro_half_window_s: 0.01 # toc do quay tu goc ATTITUDE luc t - 10 ms va t + 10 ms
+  flush_period_s: 1.0 # ghi file moi 1 s
+  log_period_s: 5.0 # dong "VIDEO ..." tom tat trong log moi 5 s
+
+launch_marker: # ArUco diem cat canh (planA): dan duoi chan UAV, CHI DANH GIA (so voi thuoc), KHONG vao vong dieu khien
+  # In: python3 planA/make_launch_marker.py. Do tu luc cho lenh (truoc cat canh, cat canh, hover) toi khi bat dau quet.
+  # Dong log "MARKER ..." (planA doc) + <thu muc ket qua>/launch_marker.csv. planA bat bang --set launch_marker.enabled=true
+  enabled: false
+  dictionary: DICT_4X4_50
+  marker_id: 1 # KHAC marker tren vat (aruco.marker_id = 0)
+  side_mm: 100.0 # canh ngoai VIEN DEN, do bang thuoc tren ban in (may in hay thu nho)
+  period_s: 0.2 # do 5 lan / s (ArUco tren anh 1920x1080 ton CPU)
+  max_reproj_px: 2.0 # loai lan do sai so chieu lai lon
+  max_tilt_deg: 15.0 # loai lan do mat phang marker nghieng > 15 do so voi san (IPPE lat nghiem)
+  track_during_scan: true # do tiep marker khi quet / bam vat: dong MARKER cho planA giu vi tri (chong troi EKF) +
+  # vung loai to giay marker (s3 KHONG chon). Chi them CPU ~1 lan ArUco / khung khi quet (khung ~1.5 s tren Pi 4)
+  exclude_radius_mm: 150 # detection co bbox chua tam marker, hoac tam bbox cach tam marker < 150 mm -> bo (to giay
+  # A4 dat marker 100 mm). 0 = tat. Marker khong thay o khung do: chieu tam marker (W, median cac lan thay) bang tu the FC
+  track_object: false # true: dong thoi bam ArUco TREN VAT (muc aruco: id 0) -> dong OBJARUCO + object_aruco.csv.
+  # Danh gia he W khi bay (camera + T_BC + EKF, khong LiDAR): planA so vi tri ArUco vat voi thuoc. Chi danh gia.

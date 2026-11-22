@@ -1,6 +1,8 @@
 // uavp_real_time: lenh may tinh qua Pixhawk (COMMAND_LONG), trang thai FC, dieu kien hover; config _base_.
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 #include <cstring>
 #include <filesystem>
 
@@ -29,9 +31,9 @@ MavMessage msg(uint32_t id, const std::vector<uint8_t>& payload, uint8_t sysid =
     return out.at(0);
 }
 
-std::vector<uint8_t> command_long(float p1, uint16_t cmd, uint8_t tsys, uint8_t tcomp) {
+std::vector<uint8_t> command_long(float p1, uint16_t cmd, uint8_t tsys, uint8_t tcomp, float p2 = 0.f, float p3 = 0.f) {
     std::vector<uint8_t> b;
-    for (const float p : {p1, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f}) put(b, p);
+    for (const float p : {p1, p2, p3, 0.f, 0.f, 0.f, 0.f}) put(b, p);
     put(b, cmd);
     b.insert(b.end(), {tsys, tcomp, 0});
     return b;
@@ -182,4 +184,23 @@ TEST(Start, PerceptionConfigInheritsBase) {
     EXPECT_EQ(mavlink_config(full["sources"]["mavlink"]).command_id, 31010);
     EXPECT_EQ(start_config(full["start"]).modes, (std::vector<uint32_t>{5, 16}));
     std::filesystem::current_path(old);
+}
+
+// planA: lenh bat dau kem muc san EKF (param2 = z, param3 = 1) -> D o buoc detect tu EKF; lenh QUET (param1 = 2).
+TEST(Start, StartCommandCarriesEkfFloorAndScanCommand) {
+    MavlinkConfig mc;
+    FcPoseBuffer buf(mc);
+    const int64_t t0 = 100 * kS;
+    buf.push(msg(kMsgCommandLong, command_long(1.f, 31010, 1, 191), 255, 190), t0);
+    EXPECT_TRUE(std::isnan(buf.status(t0, 1.0).floor_down_m));  // khong gui muc san: nhu cu
+    buf.push(msg(kMsgCommandLong, command_long(1.f, 31010, 1, 191, 0.20f, 1.f), 255, 190), t0 + kS);
+    FcStatus s = buf.status(t0 + kS, 1.0);
+    EXPECT_FLOAT_EQ(static_cast<float>(s.floor_down_m), 0.20f);
+    EXPECT_TRUE(s.command_start);
+    EXPECT_EQ(s.scan_ns, 0);
+    buf.push(msg(kMsgCommandLong, command_long(2.f, 31010, 1, 191), 255, 190), t0 + 2 * kS);
+    s = buf.status(t0 + 2 * kS, 1.0);
+    EXPECT_EQ(s.scan_ns, t0 + 2 * kS);
+    EXPECT_FALSE(stop_commanded(s, t0));  // QUET khong phai DUNG
+    EXPECT_FLOAT_EQ(static_cast<float>(s.floor_down_m), 0.20f);
 }

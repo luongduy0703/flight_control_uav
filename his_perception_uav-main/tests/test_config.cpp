@@ -62,6 +62,10 @@ TEST(Config, RealTimeSections) {
     EXPECT_GT(s.lidar_buffer_scans, 0);
     EXPECT_FALSE(display_config(raw["display"]).show);
     EXPECT_TRUE(aruco_config(raw["aruco"]).check_aruco);
+    const LaunchMarkerConfig lm = launch_marker_config(raw["launch_marker"]);
+    EXPECT_FALSE(lm.enabled);  // planA bat bang --set
+    EXPECT_NE(lm.marker_id, aruco_config(raw["aruco"]).marker_id);
+    EXPECT_FALSE(lm.track_object);  // planA bat bang --set launch_marker.track_object=true
     EXPECT_GT(monitor_config(raw["monitor"]).period_s, 0.0);
     const MavlinkConfig mav = mavlink_config(raw["sources"]["mavlink"]);
     EXPECT_EQ(mav.baudrate, 921600);
@@ -71,6 +75,61 @@ TEST(Config, RealTimeSections) {
     const CaptureConfig cap = load_capture(raw["calib_K"].as<std::string>());
     EXPECT_EQ(cap.width_px, 1920);
     EXPECT_EQ(cap.rotate_deg, 180);
+    EXPECT_EQ(cap.exposure_us, 0.0);  // ban 1 tham so: tu dong
+    const CaptureConfig locked = load_capture(raw["calib_K"].as<std::string>(), s);
+    EXPECT_NEAR(locked.exposure_us, 2500.0, 1e-9);  // phoi sang khoa 2.5 ms, gain 7
+    EXPECT_NEAR(locked.analogue_gain, 7.0, 1e-9);
+    for (const char* set : {"sources.camera_exposure_us=40000", "sources.camera_exposure_us=-1",
+                            "sources.camera_analogue_gain=0.5", "sources.camera_analogue_gain=20"}) {
+        const YAML::Node r = load_raw("configs/run/real_time.yaml", {set});
+        EXPECT_THROW((void)load_capture(r["calib_K"].as<std::string>(), sources_config(r["sources"])),
+                     std::invalid_argument) << set;
+    }
+    YAML::Node no_keys = YAML::Clone(raw["sources"]);  // file cu khong co khoa -> tu dong
+    no_keys.remove("camera_exposure_us");
+    no_keys.remove("camera_analogue_gain");
+    EXPECT_EQ(sources_config(no_keys).camera_exposure_us, 0.0);
     const YAML::Node bad = load_raw("configs/run/real_time.yaml", {"display.show=yes"});
     EXPECT_THROW((void)display_config(bad["display"]), std::runtime_error);  // phai la true / false
+}
+
+// planA --set (2026-11-22): cho lenh QUET + cua so thich ung 2 -> 10 s.
+TEST(Config, PlanAScanGateAndAdaptiveWindowOverrides) {
+    const ChdirRoot cd;
+    const YAML::Node base = load_raw("configs/run/real_time.yaml", {});
+    EXPECT_FALSE(lock_config(base["lock_track"]).wait_scan_command);  // mac dinh: hanh vi cu
+    const Config c0 = config_from_raw(base);
+    EXPECT_DOUBLE_EQ(c0.fusion.world.effective_max_window_s(), 10.0);  // s4_fusion.yaml max_window_s
+    const YAML::Node raw = load_raw("configs/run/real_time.yaml",
+                                    {"lock_track.wait_scan_command=true", "lock_track.scan_max_duration_s=12.0",
+                                     "s4_fusion.world.max_window_s=8.0"});
+    const LockConfig l = lock_config(raw["lock_track"]);
+    EXPECT_TRUE(l.wait_scan_command);
+    EXPECT_DOUBLE_EQ(l.scan_max_duration_s, 12.0);
+    EXPECT_DOUBLE_EQ(config_from_raw(raw).fusion.world.effective_max_window_s(), 8.0);
+    EXPECT_THROW((void)config_from_raw(load_raw("configs/run/real_time.yaml", {"s4_fusion.world.max_window_s=20"})),
+                 std::runtime_error);
+}
+
+// Loi 2026-11-22: size_abort doc TRUOC "c.decide = {...}" nen bi ghi de ve true.
+TEST(Config, SizeAbortOverrideSurvivesDecideInit) {
+    const ChdirRoot cd;
+    EXPECT_TRUE(config_from_raw(load_raw("configs/run/real_time.yaml", {})).decide.size_abort);
+    const Config c = config_from_raw(load_raw("configs/run/real_time.yaml", {"s3_select.size_abort=false"}));
+    EXPECT_FALSE(c.decide.size_abort);
+    EXPECT_DOUBLE_EQ(c.decide.w_max_mm, 80.0);
+}
+
+TEST(Config, WorldTrackKeys) {
+    const ChdirRoot cd;
+    const Config c = config_from_raw(load_raw("configs/run/real_time.yaml", {}));
+    EXPECT_TRUE(c.world_track);
+    EXPECT_DOUBLE_EQ(c.match_radius_mm, 80.0);
+    EXPECT_DOUBLE_EQ(c.same_object_mm, 100.0);
+    const Config o = config_from_raw(load_raw("configs/run/real_time.yaml",
+                                              {"s3_select.world_track=false", "s3_select.same_object_mm=120"}));
+    EXPECT_FALSE(o.world_track);
+    EXPECT_DOUBLE_EQ(o.same_object_mm, 120.0);
+    EXPECT_THROW((void)config_from_raw(load_raw("configs/run/real_time.yaml", {"s3_select.same_object_mm=0"})),
+                 std::runtime_error);
 }

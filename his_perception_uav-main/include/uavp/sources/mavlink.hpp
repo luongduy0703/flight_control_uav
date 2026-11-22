@@ -14,6 +14,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -120,6 +121,10 @@ struct FcStatus {
     int64_t t_ns{0};                        // luc lay trang thai
     int64_t heartbeat_ns{0}, landed_ns{0}, vel_ns{0};
     int64_t command_ns{0};                  // lenh bat dau / dung gan nhat tu may tinh (0 = chua co)
+    int64_t scan_ns{0};
+    // Muc san trong EKF (z NED, m) gui kem lenh bat dau (param2 = z, param3 = 1; planA: z FC luc cat canh +
+    // fc_above_ground_m). nan = khong co -> s3 dung do cao optical flow / rangefinder nhu cu.
+    double floor_down_m{std::numeric_limits<double>::quiet_NaN()};                     // lenh QUET gan nhat (param1 = 2: UAV da o do cao quet, planA), 0 = chua
     int64_t height_oldest_ns{0};            // mau do cao cu nhat trong cua so
     double height_min_m{kNaN}, height_max_m{kNaN}, height_median_m{kNaN};
     uint32_t custom_mode{0};
@@ -153,6 +158,8 @@ public:
     // Tu the luc t_ns: goc noi suy giua 2 mau ATTITUDE (yaw qua moc +-pi), vi tri / rangefinder: mau gan nhat trong
     // max_age_s. false neu khong co ATTITUDE quanh t_ns.
     [[nodiscard]] bool pose_at(int64_t t_ns, FcPose& out) const;
+    // Thoi diem cac mau ATTITUDE trong [t_lo_ns, t_hi_ns] (tang dan) + 1 mau ngay truoc / sau (de noi suy o bien).
+    void attitude_times(int64_t t_lo_ns, int64_t t_hi_ns, std::vector<int64_t>& out) const;
     [[nodiscard]] std::size_t n_attitude() const;
     [[nodiscard]] std::size_t n_position() const;
     [[nodiscard]] std::size_t n_range() const;

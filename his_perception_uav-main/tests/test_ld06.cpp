@@ -152,3 +152,57 @@ TEST(Ld06, CollectedSinceThenNewScans) {
     EXPECT_TRUE(buf.wait_until(s.t_ns.back(), 0.01));  // vong moi nhat da phu toi diem cuoi cua no
     EXPECT_FALSE(buf.wait_until(s.t_ns.back() + 1'000'000'000, 0.01));
 }
+
+// --- Cong doc quyen: tien trinh khac dang mo cung tty -> phat hien + tu choi (2026-11-22: ldlidar_ros2_node) --------
+#include <csignal>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include "uavp/sources/serial_port.hpp"
+
+TEST(SerialPort, DetectsOtherProcessHoldingPortAndRefuses) {
+    const int master = ::posix_openpt(O_RDWR | O_NOCTTY);
+    ASSERT_GE(master, 0);
+    ASSERT_EQ(::grantpt(master), 0);
+    ASSERT_EQ(::unlockpt(master), 0);
+    const std::string slave = ::ptsname(master);
+    EXPECT_TRUE(port_holders(slave).empty());
+
+    int ready[2];
+    ASSERT_EQ(::pipe(ready), 0);
+    const pid_t child = ::fork();
+    if (child == 0) {  // "chuong trinh khac" giu cong
+        const int fd = ::open(slave.c_str(), O_RDONLY | O_NOCTTY);
+        char c = fd >= 0 ? 'y' : 'n';
+        (void)!::write(ready[1], &c, 1);
+        ::pause();
+        ::_exit(0);
+    }
+    char c = 0;
+    ASSERT_EQ(::read(ready[0], &c, 1), 1);
+    ASSERT_EQ(c, 'y');
+    const auto holders = port_holders(slave);
+    ASSERT_EQ(holders.size(), 1U);
+    EXPECT_EQ(holders[0].rfind(std::to_string(child) + " ", 0), 0U);
+    EXPECT_THROW((void)open_serial_fd(slave, kBaud, "test"), std::runtime_error);
+
+    ::kill(child, SIGKILL);
+    ::waitpid(child, nullptr, 0);
+    EXPECT_TRUE(port_holders(slave).empty());
+    ::close(ready[0]);
+    ::close(ready[1]);
+    ::close(master);
+}
+
+TEST(Ld06Stats, CountsGoodAndBadPackets) {
+    ScanBuffer buf(4, kBaud, 0.0);
+    auto pkt = make_packet(0.0, 30.0, std::vector<int>(12, 1000));
+    buf.feed(pkt, 1'000'000'000);
+    pkt[10] ^= 0xFF;  // hong CRC
+    buf.feed(pkt, 1'001'000'000);
+    EXPECT_EQ(buf.good_packets(), 1U);
+    EXPECT_EQ(buf.crc_errors(), 1U);
+    EXPECT_DOUBLE_EQ(buf.error_percent(), 50.0);
+}
