@@ -214,6 +214,11 @@ std::optional<FloorView> floor_view(Session& s, const Config& cfg) {
     return v;
 }
 
+bool will_detect(const Session& s, const Config& cfg, uint32_t frame_idx) {
+    if (s.done) return false;
+    return cfg.single_shot || should_detect(s, frame_idx);
+}
+
 StepTimes session_step(Session& s, uint32_t frame_idx, int64_t t_ns, const cv::Mat& image_rgb, const Config& cfg,
                        Detector& detector, Segmenter& segmenter) {
     if (cfg.single_shot) return single_shot_step(s, frame_idx, t_ns, image_rgb, cfg, detector, segmenter);

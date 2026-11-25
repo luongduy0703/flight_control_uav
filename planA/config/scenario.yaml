@@ -92,6 +92,10 @@ perception:
   fp16: true # trong so + activation cua s1 detect / s2 segment LUU fp16 trong RAM (ncnn use_fp16_storage), cung model
   # da train (fp32 -> fp16 luc nap). Pi 4 (A72) khong tinh fp16, chi giam bang thong RAM: do 2026-11-14 s1 711 ms (fp16)
   # so voi ~1150 ms (fp32, log 2026-11-22). false: fp32 nhu cu
+  single_shot: true # s1 CHI 1 khung (960x544): bo conf < 0.70, xet tu vat gan tam: mask >= 5 px -> chon, khoa + bam nhu cu.
+                    # Vat khac -> dong CANDIDATE (p_W tren san) = dich bay tiep (summary.json "candidates").
+                    # Khong vat nao dat -> perception ket thuc ngay (khong thu lai). false: che do cu (n_min lan do)
+  frame_gate: true # cong chat luong khung truoc s1 (tang 1 gyro + tang 2 do net; nguong o muc frame_gate cua real_time.yaml)
   set: [] # ghi de them, vd ["remote.max_fps=5"]
 
 ground_truth: # tam mat top cua vat that, he kich ban (m): goc = SAN ngay duoi Pixhawk luc cat canh

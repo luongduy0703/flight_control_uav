@@ -120,6 +120,26 @@ aruco: # kiem tra sai so s4 bang ArUco dan tren mat tren vat (in: print/aruco_4x
   side_mm: 36.4 # canh ngoai VIEN DEN (khong tinh vien trang). Mau 40 mm in ra 91 % -> 36.4 mm. Sai 1 mm ~ sai 2.7 %
   # khoang cach ArUco. Dan marker canh duong quet LiDAR (o den / trang lam LD06 do lech), phang tren mat tren.
 
+frame_gate: # cong chat luong khung TRUOC s1 (src/support/frame_gate.cpp). Khung khong dat -> lay khung moi (30 fps)
+  # Tang 1 gyro (tu the Pixhawk): nhoe = f x BE RONG quy dao (max - min cua tich phan w) trong luc phoi sang, xet hang
+  # tren / giua / duoi; rolling shutter = f max|w_perp| T_readout; xoay quanh truc quang = r x ptp(theta_z).
+  # ATTITUDE ~50 Hz chi thay chuyen dong than (< ~20 Hz); rung motor 100-200 Hz do tang 2 bat.
+  # Tang 2 do net: kenh G, sharp_rows hang O DO PHAN GIAI GOC giua anh; so voi trung vi `history` khung TRUOC.
+  enabled: true
+  max_blur_px: 1.5 # nhoe toi da (px tren anh 1920x1080)
+  max_rs_px: 3.0 # meo rolling shutter toi da
+  readout_ms: 18.0 # IMX708 che do 2304x1296: ~18 ms doc het khung (UOC TINH tu 56 fps toi da; do lai neu doi che do)
+  roll_radius_px: 1101 # nua duong cheo 1920x1080 (goc anh, s1 xet ca khung); 0 = bo qua xoay quanh truc quang
+  max_roll_px: 1.5
+  attitude_wait_ms: 60 # cho ATTITUDE phu het luc doc khung (tre MAVLink) toi da 60 ms
+  require_gyro: false # true: khong co tu the FC -> khong qua cong. false: chi con tang 2
+  sharp_rows: 32 # so cap hang (~30k diem, < 1 ms tren Pi 4)
+  sharp_band: 0.5 # lay hang / cot trong 50 % giua anh
+  history: 10 # trung vi do net cua 10 khung TRUOC
+  min_history: 5 # it hon 5 khung: chua co moc, cho them (~0.2 s o 30 fps)
+  min_ratio: 0.7 # do net >= 0.7 x trung vi
+  max_wait_s: 3.0 # het 3 s chua co khung dat -> van chay s1 tren khung hien tai (log GATE ... canh bao)
+
 video_diag: # chan doan rung / mo video (planA bat): moi khung -> <thu muc ket qua>/video_diag.csv
   # Do: khoang khung, phoi sang, gain, do net (Laplacian o giua anh), dich anh giua 2 khung + lech tren / duoi anh
   # (rolling shutter), toc do quay tu ATTITUDE, mo du doan = |w| f t_phoisang, trang thai FC (armed, landed).

@@ -336,6 +336,33 @@ VideoDiagConfig video_diag_config(const YAML::Node& r) {
     return c;
 }
 
+FrameGateConfig frame_gate_config(const YAML::Node& r) {
+    FrameGateConfig c;
+    c.enabled = get_bool(r, "enabled");
+    c.max_blur_px = get<double>(r, "max_blur_px");
+    c.max_rs_px = get<double>(r, "max_rs_px");
+    c.readout_ms = get<double>(r, "readout_ms");
+    c.roll_radius_px = get<double>(r, "roll_radius_px");
+    c.max_roll_px = get<double>(r, "max_roll_px");
+    c.attitude_wait_ms = get<double>(r, "attitude_wait_ms");
+    c.require_gyro = get_bool(r, "require_gyro");
+    c.sharp_rows = get<int>(r, "sharp_rows");
+    c.sharp_band = get<double>(r, "sharp_band");
+    c.history = get<int>(r, "history");
+    c.min_history = get<int>(r, "min_history");
+    c.min_ratio = get<double>(r, "min_ratio");
+    c.max_wait_s = get<double>(r, "max_wait_s");
+    if (!(c.max_blur_px > 0.0) || !(c.max_rs_px > 0.0) || !(c.readout_ms >= 0.0) || c.roll_radius_px < 0.0 ||
+        !(c.max_roll_px > 0.0) || c.attitude_wait_ms < 0.0)
+        throw std::runtime_error("frame_gate: max_blur_px, max_rs_px, max_roll_px > 0; readout_ms, roll_radius_px, "
+                                 "attitude_wait_ms >= 0");
+    if (c.sharp_rows < 2 || !(c.sharp_band > 0.0 && c.sharp_band <= 1.0) || c.history < 1 || c.min_history < 1 ||
+        c.min_history > c.history || !(c.min_ratio > 0.0 && c.min_ratio <= 1.0) || !(c.max_wait_s > 0.0))
+        throw std::runtime_error("frame_gate: sharp_rows >= 2, 0 < sharp_band <= 1, 1 <= min_history <= history, "
+                                 "0 < min_ratio <= 1, max_wait_s > 0");
+    return c;
+}
+
 DisplayConfig display_config(const YAML::Node& r) {
     return {get<int>(r, "window_width_px"), get<int>(r, "window_height_px"), get_bool(r, "show")};
 }

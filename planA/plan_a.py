@@ -43,6 +43,8 @@ DEFAULTS = {
         'match_radius_mm': 80.0,  # co tu the FC: ghep detection voi track theo diem tren san (mm)
         'same_object_mm': 100.0,  # 2 tam tren san cach <= 100 mm -> cung mot vat (ke ca vat da ABORT)
         'fp16': True,
+        'single_shot': True,  # s1 CHI 1 khung: chon vat gan tam nhat co mask + conf; vat khac -> CANDIDATE (dich tiep)
+        'frame_gate': True,   # cong chat luong khung truoc s1 (gyro + do net, frame_gate trong real_time.yaml)
     },
     'ground_truth': {'x_m': 0.635, 'y_m': 0.255, 'z_m': None},
     'marker': {  # launch ArUco: evaluation only (tape vs object), never used for control
@@ -125,8 +127,9 @@ def validate(cfg):
     for k in ('match_radius_mm', 'same_object_mm'):
         if not 20.0 <= cfg['perception'][k] <= 500.0:
             raise ValueError(f'perception.{k} phai trong [20, 500] mm')
-    if not isinstance(cfg['perception']['fp16'], bool):
-        raise ValueError('perception.fp16 phai la true / false')
+    for key in ('fp16', 'single_shot', 'frame_gate'):
+        if not isinstance(cfg['perception'][key], bool):
+            raise ValueError(f'perception.{key} phai la true / false')
     final = cfg['approach']['final_height_m']
     if final is not None and (not isinstance(final, (int, float)) or not math.isfinite(final)
                               or not 0.3 <= final <= cfg['flight']['hover_height_m']):
@@ -218,6 +221,8 @@ def perception_overrides(cfg):
         'lock_track.wait_scan_command=true',  # chi tich luy / ket thuc sau lenh QUET (UAV da o do cao quet)
         f"lock_track.scan_max_duration_s={p['scan_max_s']}",
         f"s3_select.size_abort={'true' if p['size_abort'] else 'false'}",
+        f"s3_select.single_shot={'true' if p['single_shot'] else 'false'}",
+        f"frame_gate.enabled={'true' if p['frame_gate'] else 'false'}",
         f"s3_select.match_radius_px={p['match_radius_px']}",
         's3_select.world_track=true',  # vat = diem tren san, du doan ROI bang tu the camera luc chup
         f"s3_select.match_radius_mm={p['match_radius_mm']}",

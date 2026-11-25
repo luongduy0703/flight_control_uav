@@ -63,6 +63,10 @@ struct StepTimes {
     bool detected{false};  // khung nay co chay s1
 };
 
+// Khung `frame_idx` se chay s1? (single_shot: chi khung dau; cu: bat dau / chua co vat / mat vat). App dung de chay
+// cong chat luong khung (support/frame_gate.hpp) truoc s1.
+[[nodiscard]] bool will_detect(const Session& s, const Config& cfg, uint32_t frame_idx);
+
 // Mot khung (anh RGB chup luc t_ns, dong ho chung): sua tai cho `s`. Tra ve thoi gian tung buoc.
 StepTimes session_step(Session& s, uint32_t frame_idx, int64_t t_ns, const cv::Mat& image_rgb, const Config& cfg,
                        Detector& detector, Segmenter& segmenter);

@@ -81,7 +81,7 @@ add_library(uavp_core STATIC
   src/sources/serial_port.cpp src/sources/ld06.cpp src/sources/ld06_buffer.cpp src/sources/mavlink.cpp
   src/sources/fc_shm.cpp
   src/sources/replay_source.cpp
-  src/support/aruco_check.cpp src/support/launch_marker.cpp src/support/video_diag.cpp src/support/draw.cpp src/support/hw_monitor.cpp src/support/hw_monitor_thread.cpp
+  src/support/aruco_check.cpp src/support/frame_gate.cpp src/support/launch_marker.cpp src/support/video_diag.cpp src/support/draw.cpp src/support/hw_monitor.cpp src/support/hw_monitor_thread.cpp
   src/support/terminal_keys.cpp src/support/cpu_affinity.cpp src/support/remote_view.cpp)
 target_include_directories(uavp_core PUBLIC include)
 target_include_directories(uavp_core SYSTEM PUBLIC ${OpenCV_INCLUDE_DIRS})  # canh bao cua OpenCV khong tinh
@@ -161,7 +161,8 @@ if(UAVP_BUILD_TESTS)
     tests/test_world_plane.cpp
     tests/test_lidar_align.cpp
     tests/test_launch_marker.cpp
-    tests/test_video_diag.cpp)
+    tests/test_video_diag.cpp
+    tests/test_frame_gate.cpp)
   target_compile_options(uavp_tests PRIVATE ${UAVP_WARNINGS})
   target_link_libraries(uavp_tests PRIVATE uavp_core GTest::gtest_main)
   # thu muc goc (configs/, models/) va du lieu parity (tools/dump_parity.py)

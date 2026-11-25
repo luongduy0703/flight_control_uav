@@ -191,6 +191,27 @@ struct LaunchMarkerConfig {
 };
 
 // Chan doan video (include/uavp/support/video_diag.hpp): do moi khung de tim nguon rung / mo. Chi ghi log.
+// Cong chat luong khung TRUOC s1 (support/frame_gate.hpp). Thieu muc frame_gate trong config -> tat.
+struct FrameGateConfig {
+    bool enabled{false};
+    // Tang 1 (gyro, tu the Pixhawk): be rong quy dao f (max d - min d) trong luc phoi sang, meo rolling shutter
+    // f |w_perp| T_readout, nhoe xoay quanh truc quang r ptp(theta_z).
+    double max_blur_px{1.5};
+    double max_rs_px{3.0};
+    double readout_ms{18.0};       // thoi gian doc het khung cua che do cam bien (IMX708 2304x1296 ~18 ms, uoc tinh)
+    double roll_radius_px{1101.0}; // ban kinh xet nhoe xoay (nua duong cheo 1920x1080 = goc anh; 0 = bo qua)
+    double max_roll_px{1.5};
+    double attitude_wait_ms{60.0}; // cho ATTITUDE phu het luc doc khung (tre truyen MAVLink) toi da
+    bool require_gyro{false};      // true: khong co tu the FC -> khong qua cong (false: chi dung tang 2)
+    // Tang 2 (do net tu anh): it hang O DO PHAN GIAI GOC giua anh, so voi trung vi truot cua chinh no.
+    int sharp_rows{32};
+    double sharp_band{0.5};        // vung giua anh (ti le chieu cao / rong) de lay hang
+    int history{10};               // trung vi cua `history` khung TRUOC
+    int min_history{5};            // it hon: chua co moc -> cho them khung (khong tinh la truot)
+    double min_ratio{0.7};         // do net / trung vi >= 0.7
+    double max_wait_s{3.0};        // qua thoi gian ma chua co khung dat -> chay s1 tren khung hien tai (canh bao)
+};
+
 struct VideoDiagConfig {
     bool enabled{false};
     int every_n{1};               // do 1 / every_n khung (giam tai CPU)
@@ -337,6 +358,7 @@ struct Config {
 [[nodiscard]] ArucoConfig aruco_config(const YAML::Node& r);
 [[nodiscard]] LaunchMarkerConfig launch_marker_config(const YAML::Node& r);
 [[nodiscard]] VideoDiagConfig video_diag_config(const YAML::Node& r);
+[[nodiscard]] FrameGateConfig frame_gate_config(const YAML::Node& r);
 [[nodiscard]] DisplayConfig display_config(const YAML::Node& r);
 [[nodiscard]] MonitorConfig monitor_config(const YAML::Node& r);
 [[nodiscard]] ModelConfig model_config(const YAML::Node& r);

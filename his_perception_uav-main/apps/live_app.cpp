@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <map>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -43,6 +44,7 @@
 #include "uavp/stages/s4_fusion/lidar.hpp"
 #include "uavp/stages/s4_fusion/world_plane.hpp"
 #include "uavp/support/aruco_check.hpp"
+#include "uavp/support/frame_gate.hpp"
 #include "uavp/support/launch_marker.hpp"
 #include "uavp/support/video_diag.hpp"
 #include "uavp/support/cpu_affinity.hpp"
@@ -99,6 +101,7 @@ struct Live {
     std::filesystem::path run_dir{};  // thu muc ket qua (anh moc: start.jpg, detect.jpg, aligned.jpg)
     LaunchMarkerTracker* launch_marker{nullptr};  // ArUco diem cat canh (planA, chi danh gia); nullptr: tat
     LaunchMarkerTracker* object_marker{nullptr};  // ArUco tren vat (launch_marker.track_object, chi danh gia)
+    FrameGate* gate{nullptr};  // cong chat luong khung truoc s1 (frame_gate.enabled); nullptr: tat
 };
 
 constexpr const char* kTimingHeader = "frame,capture_ms,s1_ms,s2_ms,s3_ms,loop_ms,latency_ms\n";
@@ -695,6 +698,60 @@ void set_marker_zone(Live& live, Session& s, const cv::Mat& image, int64_t t_ns)
     if (const auto z = live.launch_marker->zone_px(t_ns, live.fc)) s.exclude.push_back({z->first, z->second});
 }
 
+// Cong chat luong khung truoc s1: xet khung trong `slot`; khong dat -> lay khung moi VAO CUNG slot, toi khi dat hoac
+// het frame_gate.max_wait_s (khi do chay s1 tren khung hien tai, canh bao). Moi khung xet: tang 1 gyro (cho ATTITUDE
+// phu het luc doc khung, toi da attitude_wait_ms) + tang 2 do net so voi trung vi truot.
+void gate_frame(Live& live, int slot, FrameMeta& meta, uint32_t idx) {
+    FrameGate& gate = *live.gate;
+    const FrameGateConfig& g = gate.config();
+    const double f_px = live.cfg.camera.K_px(0, 0);
+    const int64_t start = mono_ns();
+    int tried = 0;
+    std::map<std::string, int> rejects;
+    GateResult r;
+    while (true) {
+        ++tried;
+        std::vector<RateSample> rates;
+        if (live.fc != nullptr) {
+            const int64_t t_end = meta.t_ns + static_cast<int64_t>(g.readout_ms * 1e6) +
+                                  static_cast<int64_t>(std::max(0.0, meta.exposure_us) * 1e3);
+            const int64_t wait_until = mono_ns() + static_cast<int64_t>(g.attitude_wait_ms * 1e6);
+            while (live.fc->latest_attitude_ns() < t_end && mono_ns() < wait_until)  // ATTITUDE den tre ~10-30 ms
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            rates = camera_rates(*live.fc, live.body_camera, meta.t_ns, t_end);
+        }
+        r = gate.evaluate(live.pool.image(slot), meta.t_ns, meta.exposure_us, f_px, rates);
+        const bool timeout = static_cast<double>(mono_ns() - start) / 1e9 >= g.max_wait_s;
+        if (r.pass || timeout) break;
+        ++rejects[r.reason];
+        if (!live.camera.next_frame(live.pool.image(slot), meta, live.src.frame_timeout_s))
+            throw std::runtime_error("Khong co khung moi sau frame_timeout_s");
+        live.pool.t_ns(slot) = meta.t_ns;
+    }
+    const double ms = ms_since(start);
+    live.timings.add("frame_gate", ms);
+    std::string rej;
+    for (const auto& [k, n] : rejects) rej += k + "=" + std::to_string(n) + " ";
+    if (r.pass)
+        UAVP_LOG_INFO(kModule, "GATE ok khung %u sau %d khung (%.0f ms) | nhoe %.2f px, rolling shutter %.2f px, xoay %.2f px%s"
+                      " | net %.1f / trung vi %.1f = %.2f | loai: %s", idx, tried, ms, r.blur_px, r.rs_px, r.roll_px,
+                      r.gyro ? "" : " (KHONG co gyro)", r.sharp, r.sharp_median, r.sharp_ratio,
+                      rej.empty() ? "-" : rej.c_str());
+    else
+        UAVP_LOG_WARN(kModule, "GATE het %.1f s chua co khung dat (lan cuoi: %s) -> van chay s1 tren khung nay | "
+                      "nhoe %.2f px, rs %.2f px, xoay %.2f px, net %.2f x trung vi | loai: %s", g.max_wait_s,
+                      r.reason.c_str(), r.blur_px, r.rs_px, r.roll_px, r.sharp_ratio, rej.c_str());
+    fc_event(live, "frame_gate", [&](JsonWriter& w) {
+        w.key("frame").value(static_cast<int64_t>(idx)).key("pass").value(r.pass).key("reason").value(r.reason);
+        w.key("tried").value(tried).key("wait_ms").num(ms).key("gyro").value(r.gyro);
+        w.key("blur_px").num(r.blur_px).key("rs_px").num(r.rs_px).key("roll_px").num(r.roll_px);
+        w.key("sharp").num(r.sharp).key("sharp_ratio").num(r.sharp_ratio);
+        w.key("rejects").begin_object();
+        for (const auto& [k, n] : rejects) w.key(k).value(n);
+        w.end_object();
+    });
+}
+
 void run_until_selected(Live& live, Detector& det, Segmenter& seg, Scanned& sc) {
     live.monitor.set_phase(Phase::kS1S3);
     const int64_t start_all = mono_ns();
@@ -706,6 +763,7 @@ void run_until_selected(Live& live, Detector& det, Segmenter& seg, Scanned& sc) 
         if (!live.camera.next_frame(live.pool.image(slot), meta, live.src.frame_timeout_s))
             throw std::runtime_error("Khong co khung moi sau frame_timeout_s");
         live.pool.t_ns(slot) = meta.t_ns;
+        if (live.gate != nullptr && will_detect(sc.session, live.cfg, idx)) gate_frame(live, slot, meta, idx);
         const double capture_ms = ms_since(start);
         if (idx == 0) {
             sc.t_first_ns = meta.t_ns;
@@ -1532,6 +1590,15 @@ int run_main(int argc, char** argv, AppMode mode) {
                                                     "OBJARUCO")
             : nullptr;
     live.object_marker = object_marker.get();
+    const FrameGateConfig gate_cfg = raw["frame_gate"] ? frame_gate_config(raw["frame_gate"]) : FrameGateConfig{};
+    const std::unique_ptr<FrameGate> gate = gate_cfg.enabled ? std::make_unique<FrameGate>(gate_cfg) : nullptr;
+    live.gate = gate.get();
+    if (gate != nullptr)
+        UAVP_LOG_INFO(kModule, "Cong khung truoc s1: nhoe <= %.1f px, rolling shutter <= %.1f px (T_readout %.0f ms), "
+                      "xoay <= %.1f px tai r %.0f px, net >= %.2f x trung vi %d khung truoc, cho toi da %.1f s%s",
+                      gate_cfg.max_blur_px, gate_cfg.max_rs_px, gate_cfg.readout_ms, gate_cfg.max_roll_px,
+                      gate_cfg.roll_radius_px, gate_cfg.min_ratio, gate_cfg.history, gate_cfg.max_wait_s,
+                      fc != nullptr ? "" : " | KHONG co Pixhawk: chi tang 2 (do net)");
     const StartInfo info = wait_for_start(live);
     if (launch_marker != nullptr) {
         const bool keep = marker_cfg.track_during_scan;

@@ -34,6 +34,7 @@ ALIGN_MARK = 'ALIGN ok='            # does the LiDAR line cross the object (e_mm
 OBJECT_MARK = 'OBJECT p_W_mm='      # final top-surface centre, normal, yaw
 MARKER_MARK = 'MARKER seen='        # launch ArUco under the UAV (evaluation only, never a setpoint)
 ARUCO_MARK = 'ARUCO_S4 found='     # ArUco on the object at the final s4 image: distance error (evaluation only)
+CANDIDATE_MARK = 'CANDIDATE rank='  # s3_select.single_shot: other detected objects (floor point p_W_mm), next targets
 RUN_DIR_MARK = 'THU MUC KET QUA '   # result directory, printed at startup
 _KV = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)=(\S+)')
 
@@ -44,9 +45,9 @@ def _numbers(text):
 
 
 def parse_marked(line):
-    """('target' | 'align' | 'object' | 'marker' | 'aruco', {key: float or tuple}) for a planA line, else None."""
+    """('target' | 'align' | 'object' | 'marker' | 'aruco' | 'candidate', {key: float or tuple}) for a planA line."""
     for kind, mark in (('target', TARGET_MARK), ('align', ALIGN_MARK), ('object', OBJECT_MARK),
-                       ('marker', MARKER_MARK), ('aruco', ARUCO_MARK)):
+                       ('marker', MARKER_MARK), ('aruco', ARUCO_MARK), ('candidate', CANDIDATE_MARK)):
         index = line.find(mark)
         if index < 0:
             continue
@@ -136,6 +137,8 @@ class PerceptionProcess:
         self.last_align = None
         self.last_object = None
         self.last_marker = None   # latest MARKER line (launch ArUco, evaluation only)
+        self.last_aruco = None
+        self.last_candidate = None  # latest CANDIDATE line (single_shot: another object to fly to next)
         self.run_dir = None
         self.marked = deque(maxlen=200)  # (kind, values, monotonic time) for planA, oldest first
         self.exit_code = None
@@ -173,6 +176,7 @@ class PerceptionProcess:
             self.restart_at = None
             self.last_result = None
             self.last_target = self.last_align = self.last_object = self.last_marker = self.run_dir = None
+            self.last_aruco = self.last_candidate = None
             self.marked.clear()
             self.generation += 1
             self.reader = threading.Thread(target=self._read_log,

@@ -84,6 +84,7 @@ class PlanA:
         self.object_line = None
         self.report = None
         self.pending = []        # TARGET / ALIGN / OBJECT lines not handled yet
+        self.candidates = []     # single_shot: CANDIDATE lines (other objects, next targets), nearest first
         self.markers = []        # (phase, t, values) launch ArUco seen (evaluation only)
         self.last_marker = None  # (t, values)
         self.launch_marker_check = None
@@ -372,6 +373,7 @@ class PlanA:
             raise ValueError(f'perception {state} / UAV chua HOLD: chua bat dau duoc')
         self._drain()
         self.pending.clear()  # bo dong TARGET / ALIGN / OBJECT cu (MARKER da luu)
+        self.candidates = []
         if self.cfg['marker']['enabled']:
             self.marker_frame = self._marker_frame_before_start()
             if self.marker_frame is None:
@@ -487,6 +489,8 @@ class PlanA:
                     self.say(f'[t = {dt:.2f} s] LiDAR QUET QUA VAT: e_px = {values.get("e_px")} px, '
                              f'e_mm = {values.get("e_mm")} <= {values.get("e_max_mm")} mm (d = {values.get("d_mm")} mm)'
                              ' -> segment + tich luy duong quet (anh: aligned.jpg)')
+            elif kind == 'candidate':
+                self._on_candidate(values)
             elif kind == 'aruco':
                 self.aruco_line = values
             elif kind == 'object':
@@ -494,6 +498,18 @@ class PlanA:
                 if dt is not None:
                     self.say(f'[t = {dt:.2f} s] PERCEPTION XAC DINH TAM + HUONG: mode {values.get("mode")}, '
                              f'yaw_W {values.get("yaw_W_deg")} do')
+
+    def _on_candidate(self, values):
+        """single_shot: another object seen in the s1 frame -> remember it (scenario frame) as a next target."""
+        item = {'rank': values.get('rank'), 'id': values.get('id'), 'class': values.get('class'),
+                'conf': values.get('conf'), 'p_W_mm': values.get('p_W_mm'), 'scenario_m': None}
+        p = values.get('p_W_mm')
+        if values.get('world') == 1.0 and isinstance(p, tuple) and plan_a._finite3(p) and self.launch is not None:
+            item['scenario_m'] = plan_a.to_scenario([v / 1000 for v in p], self.launch, self.yaw0, self.cfg)
+        self.candidates.append(item)
+        where = ('khong co tu the FC' if item['scenario_m'] is None
+                 else f'x = {item["scenario_m"][0]:.3f} m, y = {item["scenario_m"][1]:.3f} m (diem tren san)')
+        self.say(f'Vat tiep theo #{item["rank"]}: {item["class"]} conf {item["conf"]} -> {where}')
 
     def _target_point(self, values):
         """Point to fly to from a TARGET line: bbox centre (approach.target: bbox) or mask centre."""
@@ -680,7 +696,7 @@ class PlanA:
         summary = {'report': self.report, 'object_W': obj, 'times_s': self.times, 'launch_ned': self.launch,
                    'yaw0_deg': self.yaw0, 'corrections': self.corrections, 'last_align': self.align,
                    'perception_run': result_dir, 'no_target_timeout': self.no_target, 'config': self.cfg,
-                   'aruco_object_distance': self.aruco_report}
+                   'aruco_object_distance': self.aruco_report, 'candidates': self.candidates}
         if self.cfg['marker']['enabled']:
             t_BC = None if self.geometry is None else self.geometry['t_BC']
             self.marker_report = plan_a.evaluate_marker(obj, self.launch, self.yaw0, self.launch_marker_check, t_BC,

@@ -85,6 +85,25 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cfg(perception={'match_radius_px': 5.0})
 
+    def test_single_shot_and_frame_gate_overrides(self):
+        o = plan_a.perception_overrides(cfg())
+        self.assertIn('s3_select.single_shot=true', o)
+        self.assertIn('frame_gate.enabled=true', o)
+        o = plan_a.perception_overrides(cfg(perception={'single_shot': False, 'frame_gate': False}))
+        self.assertIn('s3_select.single_shot=false', o)
+        self.assertIn('frame_gate.enabled=false', o)
+        with self.assertRaises(ValueError):
+            cfg(perception={'single_shot': 'yes'})
+
+    def test_candidate_line_is_not_a_target(self):
+        import perception_process
+        line = ('[INFO uavp.live] CANDIDATE rank=1 id=2 class=box_top conf=0.912 world=1 '
+                'p_W_mm=120.5,-340.0,912.0 center_px=1500.0,300.0')
+        kind, values = perception_process.parse_marked(line)
+        self.assertEqual(kind, 'candidate')
+        self.assertEqual(values['p_W_mm'], (120.5, -340.0, 912.0))
+        self.assertEqual(values['class'], 'box_top')
+
     def test_size_abort_locked_by_default(self):
         self.assertIn('s3_select.size_abort=false', plan_a.perception_overrides(cfg()))
         self.assertIn('s3_select.size_abort=true', plan_a.perception_overrides(cfg(perception={'size_abort': True})))
