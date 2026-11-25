@@ -1,0 +1,69 @@
+# =============================================================================================
+# Stage 4 - fusion: LiDAR LD06 + mask vat selected o NHIEU KHUNG -> mat phang top (RANSAC, bu chuyen dong UAV):
+#   tam mat top p_obj = (X, Y, Z) mm he camera (Z = d = khoang cach theo truc quang), dist = |p_obj|,
+#   3 truc cua vat: z = phap tuyen mat top (huong ra xa camera), x = canh dai (yaw cua mask), y = z x x;
+#   W / L (mm), yaw (do).
+# Cach lam (src/stages/s4_fusion/fusion.cpp):
+#   1. Chi gop diem LiDAR trong +- lidar_window_s quanh mot khung CO MASK; moi diem dung mask cua khung gan nhat
+#      (mask dich theo chuyen dong tam vat noi suy giua 2 khung).
+#   2. Bu chuyen dong ngang: dich diem ve khung tham chieu (khung co mask moi nhat) theo dich chuyen tam vat tren anh.
+#      UAV troi vuong goc mat quet LiDAR -> duong quet cat mat top o nhieu vi tri -> do duoc nghieng 2 huong.
+#   3. RANSAC mat phang z = a u + b w + c + e (t - t_ref): u doc mat quet, w vuong goc mat quet, e = troi do cao
+#      UAV (mm/s, tuyen tinh trong cua so). Fit lai binh phuong toi thieu tren inlier.
+#   4. d: median theo TUNG VONG QUET roi median giua cac vong (giam sai so bac ~15.6 mm cua LD06); dung moi diem
+#      trong mask, ke ca diem lech tam (z = r cos(goc) khong bi lam tron cung bac voi r).
+# Code: src/stages/s4_fusion/ (lidar, plane, fusion). Ghi de: --set s4_fusion.min_pts=30
+# =============================================================================================
+calib_T_CL: configs/calib/T_CL.yaml # R_CL, t_CL (LiDAR -> camera), quy uoc goc LD06, hieu chinh tam
+
+# --- Cach tinh mat top ---
+# world: deskew tung diem theo tu the FC (slerp), loc mask trong camera cua khung co mask, tich luy trong he the gioi
+#        (NED EKF) cua so world.window_s, RANSAC 3 diem + PCA, kiem dieu kien -> PLANE / HEIGHT_ONLY
+#        (src/stages/s4_fusion/world_plane.cpp). Can tu the FC CO VI TRI (LOCAL_POSITION_NED hoac rangefinder);
+#        khong co -> tu dong dung image.
+# image: cach cu ben tren (bu bang anh / tu the khung, z = a u + b w + c + e dt), giong ban Python (parity).
+method: world
+world:
+  window_s: 2.0 # cua so truot (1-3 s) truoc khung co mask moi nhat
+  pose_max_gap_s: 0.05 # 2 mau ATTITUDE bao quanh t_i cach nhau > 2 x 0.05 s -> bo diem (khong noi suy qua lo)
+  lidar_sigma_mm: 5.0 # nhieu LD06 theo phap tuyen (sai so hieu chuan rms ~6.5 mm); ransac_tau_mm ~ 2 sigma
+  # Dieu kien PLANE (CA BA): N inlier >= min_inliers; do trai sqrt(lambda2) >= min_sqrt_l2_mm;
+  # sigma_theta ~ sigma_perp / sqrt(N lambda2) <= max_normal_sigma_deg (sigma_perp = max(sqrt(lambda3), lidar_sigma_mm))
+  # <=> N >= (sigma_perp / (theta_max sqrt(lambda2)))^2. Vi du sigma 5 mm, theta 3 do, sqrt(lambda2) 10 mm -> N >= 92.
+  # Khong dat -> HEIGHT_ONLY: phap tuyen theo trong luc, do cao RANSAC 1D + median.
+  min_inliers: 40
+  min_sqrt_l2_mm: 10.0 # duong quet phu deu dai R -> sqrt(lambda2) = R / sqrt(12): 10 mm ~ dai R 35 mm
+  max_normal_sigma_deg: 3.0
+  # Cua so thich ung (2026-11-22): thu 2, 3, ..., 10 s; cua so dau tien dat dieu kien PLANE -> dung, log
+  # window_used_s = thoi gian tich luy duong quet can de ra vector huong. 10 s van khong dat -> HEIGHT_ONLY (cua so 2 s).
+  max_window_s: 10.0
+  window_step_s: 1.0
+
+# --- Gop LiDAR quanh khung co mask ---
+min_pts: 40 # so diem LiDAR toi thieu trong mask (moi khung cong lai)
+lidar_window_s: 0.1 # diem LiDAR cach khung co mask gan nhat > 0.1 s -> bo (UAV da dich, mask khong con dung cho)
+erode_px: 2 # co mask k = 2 px truoc khi giu diem (bo tia trung nua vat nua san, bu sai hieu chinh); 0 = khong co
+
+# --- RANSAC mat phang top ---
+plane_iters: 200 # so lan thu RANSAC (image: 2-4 diem -> a, b, c, e; world: 3 diem)
+ransac_tau_mm: 10 # inlier: khoang cach toi mat phang < 10 mm (~ 2 sigma nhieu LD06; ca image va world)
+ransac_seed: 0 # seed bo sinh so ngau nhien (tai lap)
+max_tilt_deg: 30 # gia thuyet nghieng > 30 do so voi mat anh (world: so voi phuong ngang) -> bo (mat ben, san lan)
+min_spread_mm: 15 # diem (sau bu chuyen dong) trai < 15 mm theo huong vuong goc mat quet -> khong do duoc nghieng
+# theo huong do (normal_observable = false, gia dinh b = 0): UAV gan nhu dung yen theo huong nay
+drift_min_span_s: 0.3 # diem trai < 0.3 s -> bo hang troi do cao e (qua ngan, e lan voi nhieu)
+max_motion_time_corr: 0.9 # |tuong quan(w, t)| > 0.9 (UAV troi deu mot chieu) -> nghieng b va troi e lan nhau -> bo b
+min_inlier_ratio: 0.6 # ti le inlier < 0.6 -> low_confidence (tia trung mat ben, mat tren khong phang, vat trong suot)
+ambiguity_ratio: 0.7 # mat phang 2 song song (cach mat 1 >= 2 x ransac_tau_mm) co >= 0.7 x so diem mat 1 -> tuong dong
+
+# Thieu diem / 2 mat tuong dong / chua do duoc nghieng: vong bam sau khi khoa (stages/lock_track.yaml) tiep tuc
+# segment theo nhip LiDAR va gop them diem toi khi s4 hoi tu hoac het lock_track.max_duration_s.
+
+# --- Loc diem LiDAR ---
+intensity_min: 100 # CHUA CHOT: datasheet LD06 khong co nguong; phan xa binh thuong trong 6 m ~ 200. Chinh theo du lieu that
+r_min_mm: 20 # datasheet LD06: tam do 0.02 - 12 m (tam THO, truoc hieu chinh)
+r_max_mm: 12000
+# Goc quet giu lai (he L sau khi doi goc theo T_CL: 0 do = phia truoc LD06 = huong nhin xuong). Ngoai +-40 do co the
+# trung cang UAV (do 2026-11-12, ~140 mm). LD06 van quay 360 do; tia ngoai khoang nay bi bo ngay khi doc.
+scan_angle_min_deg: -90
+scan_angle_max_deg: 90

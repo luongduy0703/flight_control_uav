@@ -1,0 +1,13 @@
+# Camera -> than FC (Pixhawk, FRD: x truoc, y phai, z xuong): p_B = R_BC p_C + t_BC.
+# Camera C theo OpenCV (x phai anh, y xuong anh, z truc quang = nhin xuong).
+# !!! CHUA HIEU CHUAN: gia tri DANH NGHIA theo cach gan (camera nhin thang xuong, canh tren anh huong ve mui UAV,
+#     tam camera trung tam FC). Sai R_BC lam ROI du doan theo tu the FC lech (flow / Kalman van sua duoc vai chuc px),
+#     va lam sai p_W. Do lai: cho UAV nghieng / quay tai cho, so dich chuyen anh voi ATTITUDE (hoac Kalibr cam-IMU),
+#     do t_BC bang thuoc. Hieu chuan lai: sao luu file nay truoc, ghi bo so moi, tang version.
+version: 0
+date: "2026-11-13"
+R_BC: # cot = truc camera trong he than: x_C -> phai (y_B), y_C -> sau (-x_B), z_C -> xuong (z_B)
+  - [0.0, -1.0, 0.0]
+  - [1.0, 0.0, 0.0]
+  - [0.0, 0.0, 1.0]
+t_BC_m: [0.0, 0.0, 0.0] # vi tri tam quang camera trong he than (m)

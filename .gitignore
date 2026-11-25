@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.venv-pc/
+
+# Native build (MAVSDK) - rebuild via tools/build_mavsdk_pi.sh
+.native/
+
+# Runtime logs
+session-logs/
+**/session-logs/
+planA/logs/
+*.log
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Perception scans pulled from the Pi (tools/pull_perception_results.py)
+results_perception/
+
+# Handoff archives and run data copied from the Pi
+
+remote_runs/
+runs_pi/

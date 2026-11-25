@@ -1,0 +1,11 @@
+# Model seg_yolo26n_roi960_s1_ncnn_fp32 (uav_perception_pi).
+source_run: data/roi_seg_0.7m_960x544/runs/20261116-125902_roi_seg07_960x544_b_full_s1 # seed tot nhat tren val
+train_cfg: segmentation/configs/roi_seg_07_960x544.yaml # tu COCO-seg, 2 pha; ROI cat tren anh 960 x 544, chi 0.7 m
+input_px: 320
+classes: [box_top, bottle_top]
+outputs: out0 (38, 2100) = 4 box + 2 class + 32 he so mask; out1 (32, 80, 80) proto
+date: "2026-11-16"
+export: ultralytics YOLO(best.pt).export(format=ncnn, imgsz=320, half=False, nms=None)
+metrics: # e2e: ROI tu bbox gan tay tren anh 960 x 544 (segmentation topseg.roi.evaluate_e2e), python-ncnn
+  val:  { mask_mAP50: 96.6, has_mask: 100.0, iou_mean: 0.851, iou_box_top: 0.894, iou_bottle_top: 0.816 }
+  test: { mask_mAP50: 85.9, has_mask: 97.1, iou_mean: 0.894, iou_box_top: 0.925, iou_bottle_top: 0.770 }

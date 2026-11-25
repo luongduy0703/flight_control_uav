@@ -1,0 +1,25 @@
+# =============================================================================================
+# Model NCNN cua s1 detect: YOLO26n train tren anh 960 x 544 (data/images_960×544, 0.7 m + 1.3 m; 2026-11-16,
+# detection/configs/finetune_960x544.yaml, seed 0 tot nhat tren val). FP32 (= PyTorch, verify_export dat).
+# Test: mAP50 96.7, mAP50-95 82.0, recall 97.0. So lieu: models/det_yolo26n_960x544_s0_ncnn_fp32/source.yaml.
+# Khong dung INT8: tren Pi 4 (A72, khong co sdot) khong nhanh hon (s1 744 ms INT8 / 711 ms fp16) ma kem chinh xac.
+# =============================================================================================
+
+# --- File model ---
+dir: models/det_yolo26n_960x544_s0_ncnn_fp32 # tinh tu thu muc goc uav_perception_pi/
+param_file: model.ncnn.param # do thi mang
+bin_file: model.ncnn.bin # trong so (fp32)
+classes: [box, bottle] # class id = vi tri, PHAI dung thu tu luc train
+
+# --- Pixel dau vao model (tien xu ly) ---
+input_px: [960, 544] # [w, h] input model CHU NHAT (= imgsz luc export), boi so cua 32. mode full: anh 1920 x 1080
+# letterbox ve 960 x 544: resize giu ti le (x 0.5 -> 960 x 540) roi dem `pad_value` 2 px tren / duoi (chu nhat: khong
+# phi 44 % input cho phan dem nhu 960 x 960). Vat 40 px (1.3 m) con ~20 px. Mot so (vd 640) = input vuong.
+pad_value: 114 # mau dem letterbox (0-255, giong ultralytics)
+interpolation: linear # cach resize anh -> input: linear (giong luc train) | area
+# Chuan hoa co dinh trong code: RGB uint8 -> float32 / 255, thu tu CHW (giong ultralytics). Anh pipeline la RGB.
+
+# --- Chay NCNN ---
+num_threads: 2 # = so nhan cua chuong trinh (configs/run/*.yaml: cpu.cores). Pi 4 / Pi 5 deu 4 nhan
+use_vulkan: false # GPU VideoCore qua Vulkan: thuong khong nhanh hon CPU voi model nho
+use_fp16_storage: false # chi LUU fp16 (A72 khong tinh fp16; phep tinh fp16 luon tat). Do bat / tat: uavp_bench_model

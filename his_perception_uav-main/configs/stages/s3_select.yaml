@@ -1,0 +1,32 @@
+# =============================================================================================
+# Stage 3 - select: CHI MOT vat dang xet = vat gan tam anh nhat; do W tu mask, DEFER / OK / ABORT -> OK = selected
+# (tam, yaw, mask). Khong dung model. Code: src/stages/s3_select/ (tracker, measure, decide, rank).
+# Ghi de: --set s3_select.D_m=2.0 s3_select.n_min=3
+# =============================================================================================
+D_m: 0.66 # khoang cach UOC TINH camera -> san (m), hang so; s3 doi kich thuoc mask (px) ra mm. LiDAR do san ~0.64 m voi
+# T_CL v1 (2026-11-06) = ~0.66 m voi T_CL hien tai (v2 dai hon v1 ~18-20 mm theo truc quang). Lay san (xa hon mat tren)
+# -> W uoc tinh hoi lon, an toan cho nguong too_big. Khoang cach THAT toi mat tren do o s4 (d, LiDAR).
+# Vat ABORT -> s1 chon vat gan tam tiep theo (chua xet). So vat xet cung luc co dinh 1 (pipeline/session.hpp: kTargets).
+bbox_max_mm: 200 # BUOC DETECTION: canh ngan bbox x D / f > 200 mm -> bo ngay, khong segment (qua to cho tay gap).
+# Bbox thang dung bao vat xoay nen rong hon canh that: nguong rong hon w_max_mm. D: do cao EKF luc bat dau (planA).
+match_radius_px: 40 # ghep detection voi track neu tam cach tam DU DOAN (van toc) <= 40 px (khi KHONG co tu the FC)
+world_track: true # co tu the FC: vat = diem tren san (NED EKF), du doan ROI bang tu the camera luc chup, ghep theo mm
+match_radius_mm: 80 # ghep detection voi track dang bam neu cach diem tren san <= 80 mm (che do world_track)
+same_object_mm: 100 # 2 tam tren san cach <= 100 mm -> CUNG MOT VAT: khong tao track moi (ke ca vat da ABORT)
+
+single_shot: true # true: s1 CHI 1 LAN (khung dau, anh 960 x 544). Bo detection conf < conf_min; xet tu vat GAN TAM
+# nhat: s2 tren bbox, mask >= mask_min_px -> CHON NGAY (khong can n_min lan do), sang khoa + bam nhu cu. Mask nho ->
+# xet vat ke tiep. Moi vat KHAC -> p_W tren san (NED EKF) -> result.json "next_targets" + dong log CANDIDATE (dich bay tiep).
+# size_abort: true van loai vat qua to (bbox_max_mm, w_max_mm); dat false neu chi muon 2 dieu kien mask + conf.
+# false: che do cu (s1 lap lai khi mat vat, can n_min lan do, mask_small_max_frames).
+
+# --- Tracking (UAV hover van troi: vat dich tren anh) ---
+# s1 CHI chay khi bat dau / chua co vat / vat bi loai, hoac khi mat vat (s2 khong ra mask o khung truoc). Cac khung
+# khac: s2 chay tren ROI quanh vi tri DU DOAN cua vat (bbox dich theo van toc tam mask), 1 vat / khung.
+velocity_alpha: 0.5 # van toc tam mask (px / khung) = 0.5 x do moi + 0.5 x cu (lam muot nhieu mask)
+n_min: 5 # so lan do hop le toi thieu truoc khi ket luan
+size_abort: true # false: KHOA abort do kich thuoc (too_big va bbox_max_mm); W van do va ghi log. planA dat false
+w_max_mm: 80 # median W > 80 mm -> ABORT too_big (canh kep 8 cm)
+conf_min: 0.70 # mean conf detection < 0.70 -> ABORT low_conf
+mask_min_px: 5 # khong co mask / mask < 5 px -> lan do khong hop le, giu DEFER
+mask_small_max_frames: 10 # 10 lan do khong hop le LIEN TIEP -> ABORT mask_small

@@ -1,0 +1,28 @@
+# Build (cmake -B build, build_*)
+build/
+build_*/
+
+# Ket qua chay (Pi: runs/; may tinh: fetch_run.ps1 -> runs_pi/, remote_viewer.py -> remote_runs/)
+runs/
+runs_pi/
+remote_runs/
+debug/
+
+# Du lieu test parity (~70 MB, sinh bang tools/dump_parity.py)
+parity_data/
+
+# Model NCNN (nhi phan, chep rieng): chi commit source.yaml (nguon goc, so do) va models/README.md
+models/*/*
+!models/*/source.yaml
+
+# Python / editor / he dieu hanh
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Goi cap nhat tam
+*.tar.gz

@@ -1,0 +1,18 @@
+# =============================================================================================
+# CHI 4 STAGE (uavp_real_time_perception): do thoi gian chay thuc te, phan cung Pi, sai so s4 so voi ArUco.
+# Khong dung Pixhawk. May tinh xem truc tiep + bam SPACE de bat dau (tools/remote_viewer.py --host <ip-pi>).
+# D camera - san cho s3 (loai vat qua to cho tay gap) co dinh distance.fixed_m = 1 m.
+#   cd ~/uav_perception_pi
+#   ./build/uavp_real_time_perception --cfg configs/run/real_time_perception.yaml --set display.show=false
+#   Ghi de: --set distance.fixed_m=0.7 remote.max_fps=2 "cpu.cores=[0,1,2,3]"
+# Ke thua configs/run/real_time.yaml (camera, LiDAR, stage, model, cpu, remote...): chi ghi cac muc khac.
+# =============================================================================================
+_base_: real_time.yaml # duong dan tinh tu thu muc file nay
+
+distance:
+  source: fixed
+  fixed_m: 1.0 # camera cach san ~1 m khi thu tren ban
+
+remote:
+  enabled: true # gui anh / LiDAR / thoi gian / phan cung ve may tinh, cho SPACE
+  max_fps: 5 # it anh hon -> it CPU hon cho viec gui (do thoi gian sach hon); 0 = khong gui anh (van gui so lieu)

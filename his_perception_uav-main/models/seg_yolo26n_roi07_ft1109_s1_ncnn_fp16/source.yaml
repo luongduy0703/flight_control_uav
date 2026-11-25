@@ -1,0 +1,6 @@
+weights: data/roi_seg_0.7m/runs/20261109-171240_roi_seg07_ft1109_ft_s1/weights/best.pt
+data: data/roi_seg_0.7m/dataset (ROI tu bbox gan tay data/labels; them 7 anh 0.7 m ngay 09/11 + 000060 vao train, val/test giu nguyen ban 2026-11-04). Seed 1 = tot nhat tren val trong 3 seed
+init: fine-tune tu data/roi_seg_0.7m/runs/20261104-162200_roi_seg07_yolo26n_b_full_s2/weights/best.pt (segmentation/configs/roi_seg_07_ft.yaml, 60 epoch, lr0 2e-4)
+export: ultralytics 8.4.193 YOLO(best.pt).export(format=ncnn, imgsz=320, half=True, batch=1, device=cpu, nms=None), 2026-11-09
+verify (ultralytics val, val crop, mask): mAP50 pytorch 0.978 / ncnn 0.954, mAP50-95 0.825 / 0.806 (fp32 ncnn 0.954 / 0.807 -> khong do fp16; val 40 vat, ~1 vat)
+outputs: out0 (38, 2100) = 4 box + 2 class (sigmoid) + 32 he so mask; out1 (32, 80, 80) proto
