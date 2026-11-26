@@ -161,6 +161,9 @@ struct FusionResult {
     std::array<double, 3> lambda_mm2{kNaN, kNaN, kNaN};  // tri rieng PCA lambda1 >= lambda2 >= lambda3
     double sqrt_l2_mm{kNaN};                 // do trai vuong goc duong quet
     double sigma_theta_deg{kNaN};            // sai so phap tuyen quanh truc yeu
+    double rho_mm{kNaN};                     // trung vi khoang cach camera -> diem LiDAR trong cua so
+    double sigma_eff_mm{kNaN};               // sqrt(lidar_sigma^2 + (rho sigma_att)^2): nhieu hieu dung theo phap tuyen
+    double tau_eff_mm{kNaN};                 // nguong inlier RANSAC da dung = max(ransac_tau_mm, 2 sigma_eff)
     double n_required{kNaN};                 // so inlier can de sigma_theta <= max_normal_sigma_deg
     int n_pose_missing{0};                   // diem bo vi khong noi suy duoc tu the FC luc t_i
     double window_used_s{kNaN};              // cua so tich luy (s) da dung: PLANE = thoi gian can de ra vector huong

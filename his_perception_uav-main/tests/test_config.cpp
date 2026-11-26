@@ -44,7 +44,7 @@ TEST(Config, ModelFilesLoadedIntoStages) {
     EXPECT_EQ(c.detector.pad_value, 114);
     EXPECT_EQ(c.segmenter.input_px, 320);  // configs/models/s2_segment_ncnn.yaml
     EXPECT_EQ(c.segmenter.classes, (std::vector<std::string>{"box_top", "bottle_top"}));
-    EXPECT_EQ(c.detector.model.dir, "models/det_yolo26n_960x544_s0_ncnn_fp32");
+    EXPECT_EQ(c.detector.model.dir, "models/det_yolo26n_960x544_v4_s2_ncnn_fp32");
     const Config o = config_from_raw(
         load_raw("configs/run/offline.yaml", {"s1_detect.model.input_px=640", "s2_segment.model.num_threads=2"}));
     EXPECT_EQ(o.detector.input_w_px, 640);  // mot so = input vuong

@@ -8,7 +8,9 @@
 //   5. RANSAC mat phang (mau 3 diem, nguong tau ~ 2 sigma LiDAR) -> PCA tren inlier: tam c, lambda1 >= lambda2 >=
 //      lambda3; phap tuyen n = vector rieng cua lambda3.
 //   6. Dieu kien (accept_plane): N >= min_inliers, sqrt(lambda2) >= min_sqrt_l2_mm, sigma_theta <= max_normal_sigma_deg
-//      voi sigma_theta ~ sigma_perp / sqrt(N lambda2). Dat -> PLANE; khong -> HEIGHT_ONLY: n theo trong luc,
+//      voi sigma_theta ~ sigma_perp / sqrt(N lambda2), sigma_perp = max(sqrt(lambda3), sigma_eff),
+//      sigma_eff^2 = sigma_lidar^2 + (rho sigma_att)^2: sai so tu the khi tich luy nhieu vong quet (rho = khoang cach).
+//      Nguong inlier RANSAC = max(ransac_tau_mm, 2 sigma_eff). Dat -> PLANE; khong -> HEIGHT_ONLY: n theo trong luc,
 //      do cao = RANSAC 1D + median.
 //   7. Tam mat top: tia qua tam mask (da khu meo) r_C = (x_n, y_n, 1) giao mat phang: p_C = (n.c / n.r) r.
 //   8. Yaw + kich thuoc: chieu contour mask len mat phang, hinh chu nhat bao nho nhat trong toa do mat phang (m).
@@ -62,14 +64,20 @@ struct PlanePca {
 void ransac_pca_plane(std::span<const cv::Vec3d> points_mm, int iters, double tau_mm, const cv::Vec3d& up,
                       double max_tilt_deg, std::mt19937_64& rng, PlanePca& out);
 
+// Nhieu hieu dung theo phap tuyen cua diem tich luy qua nhieu vong o khoang cach rho (mm):
+//   sigma_eff = sqrt(lidar_sigma^2 + (rho sigma_att)^2). Vd rho 800 mm, LiDAR 5 mm, tu the 0.5 do -> 8.6 mm (tu the chi phoi).
+[[nodiscard]] double effective_sigma_mm(const WorldPlaneConfig& cfg, double rho_mm) noexcept;
+
 struct PlaneQuality {
     double sqrt_l2_mm{kNaN};        // do trai vuong goc duong quet
-    double sigma_perp_mm{kNaN};     // nhieu theo phap tuyen: max(sqrt(lambda3), lidar_sigma_mm)
+    double sigma_eff_mm{kNaN};      // effective_sigma_mm(cfg, rho): LiDAR + tu the
+    double sigma_perp_mm{kNaN};     // nhieu theo phap tuyen: max(sqrt(lambda3), sigma_eff_mm)
     double sigma_theta_deg{kNaN};   // ~ sigma_perp / sqrt(N lambda2)
     double n_required{kNaN};        // N can de sigma_theta <= max_normal_sigma_deg
     bool accepted{false};
 };
-[[nodiscard]] PlaneQuality accept_plane(const PlanePca& p, const WorldPlaneConfig& cfg) noexcept;
+// rho_mm: khoang cach (trung vi) camera -> diem; 0 = chi nhieu LiDAR.
+[[nodiscard]] PlaneQuality accept_plane(const PlanePca& p, const WorldPlaneConfig& cfg, double rho_mm = 0.0) noexcept;
 
 // Do cao theo truc `up` (RANSAC 1D: |h - h_k| < tau_mm, roi median inlier). nan neu rong.
 [[nodiscard]] double height_1d(std::span<const cv::Vec3d> points_mm, const cv::Vec3d& up, int iters, double tau_mm,

@@ -141,13 +141,15 @@ FusionConfig fusion_config(const YAML::Node& f) {
     c.world.window_s = get<double>(w, "window_s");
     c.world.pose_max_gap_s = get<double>(w, "pose_max_gap_s");
     c.world.lidar_sigma_mm = get<double>(w, "lidar_sigma_mm");
+    c.world.attitude_sigma_deg = get<double>(w, "attitude_sigma_deg");
     c.world.min_sqrt_l2_mm = get<double>(w, "min_sqrt_l2_mm");
     c.world.max_normal_sigma_deg = get<double>(w, "max_normal_sigma_deg");
     c.world.min_inliers = get<int>(w, "min_inliers");
     if (w["max_window_s"]) c.world.max_window_s = w["max_window_s"].as<double>();
     if (w["window_step_s"]) c.world.window_step_s = w["window_step_s"].as<double>();
     if (!(c.world.window_s > 0.0 && c.world.window_s <= 10.0 && c.world.pose_max_gap_s > 0.0 &&
-          c.world.lidar_sigma_mm > 0.0 && c.world.min_sqrt_l2_mm >= 0.0 && c.world.max_normal_sigma_deg > 0.0 &&
+          c.world.lidar_sigma_mm > 0.0 && c.world.attitude_sigma_deg >= 0.0 && c.world.attitude_sigma_deg <= 5.0 &&
+          c.world.min_sqrt_l2_mm >= 0.0 && c.world.max_normal_sigma_deg > 0.0 &&
           c.world.min_inliers >= 3 && c.world.max_window_s >= 0.0 && c.world.max_window_s <= 15.0 &&
           c.world.window_step_s > 0.0))
         throw std::runtime_error("s4_fusion.world: gia tri ngoai pham vi");

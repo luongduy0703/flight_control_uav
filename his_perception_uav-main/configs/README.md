@@ -46,7 +46,7 @@ configs/
 | `interpolation` | `linear` | `linear` |
 | Chuẩn hoá (cố định trong code) | RGB uint8 / 255 → float32 CHW | RGB uint8 / 255 → float32 CHW |
 
-`input_px` phải bằng kích thước lúc train / export. Model s1 hiện tại (`models/det_yolo26n_960x544_s0_ncnn_fp32`) được train trên ảnh đã letterbox sẵn 960 × 544 và export `[960, 544]` fp32 (2026-11-16; test mAP50 96.7, recall 97.0; nguồn trong `source.yaml` của model). Model tile 640 cũ (`det_yolo26n_v3ft_s2_ncnn_fp16`) vẫn còn để quay lại chế độ 8 tile.
+`input_px` phải bằng kích thước lúc train / export. Model s1 hiện tại (`models/det_yolo26n_960x544_v4_s2_ncnn_fp32`, data v4: 0.7 / 1.3 / 1.5 m) được train trên ảnh đã letterbox sẵn 960 × 544 và export `[960, 544]` fp32 (2026-11-26; val mAP50 98.7, recall 98.5, chưa có số test; nguồn trong `source.yaml` của model). Model trước đó (`det_yolo26n_960x544_s0_ncnn_fp32`, v3) vẫn dùng được. Model tile 640 cũ (`det_yolo26n_v3ft_s2_ncnn_fp16`) vẫn còn để quay lại chế độ 8 tile.
 
 ## Hai nhân CPU (`cpu.cores`)
 

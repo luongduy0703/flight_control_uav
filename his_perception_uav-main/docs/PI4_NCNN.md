@@ -64,7 +64,8 @@ Thứ tự thử: (6) và §2 trước vì không cần train lại → (1) + (3
 | Model | Vị trí | Test (PC, python-ncnn) |
 |---|---|---|
 | s1 INT8 trộn (đã bỏ, không trong repo) | `models/det_yolo26n_960x544_s0_ncnn_int8` | mAP50 95.7, mAP50-95 77.3, recall 97.0 |
-| s1 fp32 (**mặc định**) | `models/det_yolo26n_960x544_s0_ncnn_fp32` | mAP50 96.7, mAP50-95 82.0, recall 97.0 (= PyTorch) |
+| s1 fp32 v3 (trước 2026-11-26) | `models/det_yolo26n_960x544_s0_ncnn_fp32` | mAP50 96.7, mAP50-95 82.0, recall 97.0 (= PyTorch) |
+| s1 fp32 v4 s2 (**mặc định**) | `models/det_yolo26n_960x544_v4_s2_ncnn_fp32` | val v4: mAP50 98.7, mAP50-95 77.4, recall 98.5 (= PyTorch); test: chưa đo |
 | s2 INT8 trộn (đã bỏ, không trong repo) | `models/seg_yolo26n_roi960_s1_ncnn_int8` | có mask 91.4 %, IoU mặt hộp 0.917, **nắp chai 0.51** |
 | s2 fp32 (**mặc định**) | `models/seg_yolo26n_roi960_s1_ncnn_fp32` | có mask 97.1 %, IoU mặt hộp 0.925, nắp chai 0.77 |
 | s1 / s2 cũ | `models/det_yolo26n_v3ft_s2_ncnn_fp16` (tile 640), `models/seg_yolo26n_roi07_ft1109_s1_ncnn_fp16` | s2 cũ cần `roi_image_px=[0, 0]` |

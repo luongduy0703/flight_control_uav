@@ -1,12 +1,13 @@
 # =============================================================================================
-# Model NCNN cua s1 detect: YOLO26n train tren anh 960 x 544 (data/images_960×544, 0.7 m + 1.3 m; 2026-11-16,
-# detection/configs/finetune_960x544.yaml, seed 0 tot nhat tren val). FP32 (= PyTorch, verify_export dat).
-# Test: mAP50 96.7, mAP50-95 82.0, recall 97.0. So lieu: models/det_yolo26n_960x544_s0_ncnn_fp32/source.yaml.
+# Model NCNN cua s1 detect: YOLO26n train tren data v4 960 x 544 (0.7 / 1.3 / 1.5 m; 2026-11-26, seed 2 tot nhat
+# tren val trong 3 seed). FP32 (= PyTorch, verify_export dat). Val: mAP50 98.7, mAP50-95 77.4, recall 98.5
+# (1.5 m: 96.2). Chua co so test. So lieu: models/det_yolo26n_960x544_v4_s2_ncnn_fp32/source.yaml.
+# Model cu (v3, 0.7 + 1.3 m): --set s1_detect.model.dir=models/det_yolo26n_960x544_s0_ncnn_fp32
 # Khong dung INT8: tren Pi 4 (A72, khong co sdot) khong nhanh hon (s1 744 ms INT8 / 711 ms fp16) ma kem chinh xac.
 # =============================================================================================
 
 # --- File model ---
-dir: models/det_yolo26n_960x544_s0_ncnn_fp32 # tinh tu thu muc goc uav_perception_pi/
+dir: models/det_yolo26n_960x544_v4_s2_ncnn_fp32 # tinh tu thu muc goc uav_perception_pi/
 param_file: model.ncnn.param # do thi mang
 bin_file: model.ncnn.bin # trong so (fp32)
 classes: [box, bottle] # class id = vi tri, PHAI dung thu tu luc train

@@ -222,6 +222,45 @@ TEST(WorldPlane, AcceptanceFollowsSigmaThetaFormula) {
     EXPECT_FALSE(accept_plane(p, c).accepted);
 }
 
+// Nhieu tu the khi tich luy nhieu vong: sigma_eff^2 = sigma_lidar^2 + (rho sigma_att)^2. rho 0.8 m:
+// 0.5 do -> 7.0 mm, 0.2 do -> 2.8 mm, 0.1 do -> 1.4 mm; LiDAR 5 mm + 0.5 do -> 8.6 mm (tu the chi phoi).
+TEST(WorldPlane, AttitudeNoiseInflatesNormalUncertainty) {
+    WorldPlaneConfig c;
+    c.lidar_sigma_mm = 5.0;
+    c.attitude_sigma_deg = 0.0;
+    EXPECT_NEAR(effective_sigma_mm(c, 800.0), 5.0, 1e-12);  // mo hinh cu
+    c.attitude_sigma_deg = 0.5;
+    EXPECT_NEAR(effective_sigma_mm(c, 800.0), std::hypot(5.0, 800.0 * 0.5 * kDeg), 1e-9);
+    EXPECT_NEAR(effective_sigma_mm(c, 800.0), 8.6, 0.05);
+    c.attitude_sigma_deg = 0.2;
+    EXPECT_NEAR(800.0 * c.attitude_sigma_deg * kDeg, 2.8, 0.05);
+    c.attitude_sigma_deg = 0.1;
+    EXPECT_NEAR(800.0 * c.attitude_sigma_deg * kDeg, 1.4, 0.05);
+
+    // Cung mat phang: dat khi chi tinh LiDAR, KHONG dat khi tinh ca tu the o 0.8 m (sigma_theta lac quan truoc day).
+    PlanePca p;
+    p.n_inliers = 100;
+    p.lambda_mm2 = {400.0, 100.0, 4.0};  // sqrt(l2) 10 mm, sqrt(l3) 2 mm
+    c.max_normal_sigma_deg = 3.0;
+    c.min_sqrt_l2_mm = 2.0;
+    c.attitude_sigma_deg = 0.5;
+    const PlaneQuality lidar_only = accept_plane(p, c, 0.0);
+    const PlaneQuality with_att = accept_plane(p, c, 800.0);
+    EXPECT_TRUE(lidar_only.accepted);
+    EXPECT_FALSE(with_att.accepted);
+    EXPECT_NEAR(with_att.sigma_perp_mm, effective_sigma_mm(c, 800.0), 1e-12);
+    EXPECT_NEAR(with_att.sigma_theta_deg / lidar_only.sigma_theta_deg, effective_sigma_mm(c, 800.0) / 5.0, 1e-9);
+    EXPECT_GT(with_att.n_required, 2.9 * lidar_only.n_required);  // (8.6 / 5)^2 = 2.96
+    p.n_inliers = 300;  // du N
+    EXPECT_TRUE(accept_plane(p, c, 800.0).accepted);
+    // sqrt(lambda2) >= 2 mm: trai 3 mm du dieu kien trai, chi con sigma_theta quyet dinh
+    p.lambda_mm2 = {400.0, 9.0, 4.0};
+    p.n_inliers = 100000;
+    EXPECT_TRUE(accept_plane(p, c, 800.0).accepted);
+    p.lambda_mm2[1] = 3.0;  // sqrt 1.7 mm < 2 mm
+    EXPECT_FALSE(accept_plane(p, c, 800.0).accepted);
+}
+
 TEST(WorldPlane, Height1dIgnoresFloorPoints) {
     std::vector<cv::Vec3d> pts;
     for (int i = 0; i < 60; ++i) pts.emplace_back(i, 0, kTop + (i % 3) - 1);

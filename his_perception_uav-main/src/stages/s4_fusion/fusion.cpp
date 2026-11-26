@@ -329,14 +329,31 @@ void Fusion::solve_world(std::span<const MaskFrame> frames, FusionResult& r) {
         for (std::size_t i = 0; i < points_W_.size(); ++i)
             if (r.points_t_ns[i] >= t_lo) idx.push_back(i), sub.push_back(points_W_[i]);
     };
+    // Khoang cach camera -> diem (trung vi trong cua so): sai so tu the d_theta dich diem rho d_theta khi tich luy
+    // nhieu vong -> nhieu hieu dung sigma_eff, dung cho ca nguong inlier RANSAC va sigma_theta (accept_plane).
+    std::vector<double> ranges;
+    const auto window_rho = [&]() {
+        ranges.clear();
+        for (const std::size_t i : idx) {
+            const cv::Point3f& p = r.points_C_mm[i];
+            ranges.push_back(std::sqrt(double(p.x) * p.x + double(p.y) * p.y + double(p.z) * p.z));
+        }
+        return median_inplace(std::span<double>(ranges));
+    };
+    double rho = kNaN, tau = cfg_.ransac_tau_mm;
+    const auto update_noise = [&]() {
+        rho = window_rho();
+        tau = std::max(cfg_.ransac_tau_mm, 2.0 * effective_sigma_mm(wc, std::isfinite(rho) ? rho : 0.0));
+    };
     PlaneQuality q;
     double w_ok = kNaN, w_height = kNaN;  // cua so PLANE / cua so nho nhat du diem
     for (double w = wc.window_s;; w = std::min(w + wc.window_step_s, max_w)) {
         select(w);
         if (static_cast<int>(sub.size()) >= cfg_.min_pts) {
             if (!std::isfinite(w_height)) w_height = w;
-            ransac_pca_plane(sub, cfg_.plane_iters, cfg_.ransac_tau_mm, down, cfg_.max_tilt_deg, rng_, pca_);
-            q = pca_.n_inliers > 0 ? accept_plane(pca_, wc) : PlaneQuality{};
+            update_noise();
+            ransac_pca_plane(sub, cfg_.plane_iters, tau, down, cfg_.max_tilt_deg, rng_, pca_);
+            q = pca_.n_inliers > 0 ? accept_plane(pca_, wc, std::isfinite(rho) ? rho : 0.0) : PlaneQuality{};
             if (q.accepted) {
                 w_ok = w;
                 break;
@@ -348,6 +365,9 @@ void Fusion::solve_world(std::span<const MaskFrame> frames, FusionResult& r) {
     r.sqrt_l2_mm = q.sqrt_l2_mm;
     r.sigma_theta_deg = q.sigma_theta_deg;
     r.n_required = q.n_required;
+    r.rho_mm = rho;
+    r.sigma_eff_mm = effective_sigma_mm(wc, std::isfinite(rho) ? rho : 0.0);
+    r.tau_eff_mm = tau;
     cv::Vec3d n_W = down, c_W;
     std::vector<uint8_t> sub_in;
     if (q.accepted) {
@@ -361,7 +381,8 @@ void Fusion::solve_world(std::span<const MaskFrame> frames, FusionResult& r) {
         if (!std::isfinite(w_height)) return;
         r.window_used_s = max_w;  // da thu het cua so ma khong ra vector huong
         select(w_height);
-        const double h = height_1d(sub, down, cfg_.plane_iters, cfg_.ransac_tau_mm, rng_, sub_in);
+        update_noise();
+        const double h = height_1d(sub, down, cfg_.plane_iters, tau, rng_, sub_in);
         if (!std::isfinite(h)) return;
         cv::Vec3d sum(0, 0, 0);
         int n = 0;

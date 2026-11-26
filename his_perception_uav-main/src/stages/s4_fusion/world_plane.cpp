@@ -165,11 +165,17 @@ void ransac_pca_plane(std::span<const cv::Vec3d> points_mm, int iters, double ta
     }
 }
 
-PlaneQuality accept_plane(const PlanePca& p, const WorldPlaneConfig& cfg) noexcept {
+double effective_sigma_mm(const WorldPlaneConfig& cfg, double rho_mm) noexcept {
+    const double att = std::max(0.0, rho_mm) * cfg.attitude_sigma_deg * kDegToRad;
+    return std::sqrt(cfg.lidar_sigma_mm * cfg.lidar_sigma_mm + att * att);
+}
+
+PlaneQuality accept_plane(const PlanePca& p, const WorldPlaneConfig& cfg, double rho_mm) noexcept {
     PlaneQuality q;
     if (p.n_inliers < 3 || !std::isfinite(p.lambda_mm2[1])) return q;
     q.sqrt_l2_mm = std::sqrt(p.lambda_mm2[1]);
-    q.sigma_perp_mm = std::max(std::sqrt(p.lambda_mm2[2]), cfg.lidar_sigma_mm);
+    q.sigma_eff_mm = effective_sigma_mm(cfg, rho_mm);
+    q.sigma_perp_mm = std::max(std::sqrt(p.lambda_mm2[2]), q.sigma_eff_mm);
     const double theta_max = cfg.max_normal_sigma_deg * kDegToRad;
     if (q.sqrt_l2_mm > 0.0) {
         q.sigma_theta_deg = q.sigma_perp_mm / std::sqrt(p.n_inliers * p.lambda_mm2[1]) / kDegToRad;

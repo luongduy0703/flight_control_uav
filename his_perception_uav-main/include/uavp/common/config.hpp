@@ -105,7 +105,10 @@ struct WorldPlaneConfig {
     double window_s{2.0};              // cua so truot tich luy diem truoc khung co mask moi nhat
     double pose_max_gap_s{0.05};       // mau tu the FC bao quanh t_i cach xa hon -> bo diem (ATTITUDE >= 20 Hz)
     double lidar_sigma_mm{5.0};        // nhieu LiDAR theo phap tuyen (tau RANSAC = ransac_tau_mm ~ 2 sigma)
-    double min_sqrt_l2_mm{10.0};       // do trai sqrt(lambda2) toi thieu (phu deu dai R: R / sqrt(12))
+    // Nhieu tu the TUONG DOI giua cac vong quet (do): moi sai so goc d_theta dich diem o khoang cach rho di rho d_theta.
+    // sigma_perp_eff^2 = lidar_sigma^2 + (rho sigma_att)^2 (world_plane.hpp: effective_sigma_mm). 0 = bo qua (cu).
+    double attitude_sigma_deg{0.0};
+    double min_sqrt_l2_mm{10.0};       // do trai sqrt(lambda2) toi thieu (phu deu dai R: R / sqrt(12)); config: 2 mm
     double max_normal_sigma_deg{3.0};  // sai so phap tuyen quanh truc yeu toi da
     int min_inliers{40};
     // Cua so THICH UNG (2026-11-22): thu window_s, window_s + window_step_s, ... toi max_window_s; cua so dau tien dat

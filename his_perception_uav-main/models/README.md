@@ -4,7 +4,8 @@ Model NCNN mà s1 detect và s2 segment nạp, theo khoá `dir` trong `configs/m
 
 | Thư mục | Model | Dùng khi |
 |---|---|---|
-| `det_yolo26n_960x544_s0_ncnn_fp32` | **s1 (mặc định)**: YOLO26n detect, train trên ảnh 960 × 544 (0.7 m + 1.3 m), input [960, 544], fp32 | Luôn |
+| `det_yolo26n_960x544_v4_s2_ncnn_fp32` | **s1 (mặc định, 2026-11-26)**: YOLO26n detect, data v4 960 × 544 (0.7 / 1.3 / 1.5 m), input [960, 544], fp32 | Luôn |
+| `det_yolo26n_960x544_s0_ncnn_fp32` | s1 trước đó (v3, 0.7 m + 1.3 m), cùng input và định dạng đầu ra | `--set s1_detect.model.dir=models/det_yolo26n_960x544_s0_ncnn_fp32` |
 | `seg_yolo26n_roi960_s1_ncnn_fp32` | **s2 (mặc định)**: YOLO26n-seg mặt trên, ROI cắt trên ảnh 960 × 544 (0.7 m), input 320, fp32 | Luôn (`s2_segment.roi_image_px: [960, 544]`) |
 | `det_yolo26n_v3ft_s2_ncnn_fp16` | s1 cũ: chế độ 8 tile 640 | `tests/test_parity.cpp`; quay lại chế độ tile |
 | `seg_yolo26n_roi07_ft1109_s1_ncnn_fp16` | s2 cũ: ROI cắt trên ảnh 1920 × 1080 | Chế độ cũ: `--set "s2_segment.roi_image_px=[0, 0]" s2_segment.model.dir=models/seg_yolo26n_roi07_ft1109_s1_ncnn_fp16` |

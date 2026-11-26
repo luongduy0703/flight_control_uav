@@ -832,9 +832,11 @@ FusionResult run_fusion(Live& live, Fusion& fusion, const std::vector<MaskFrame>
                   live.timings.get("s4_fusion")->back());
     if (r.mode != PlaneMode::kImage)
         UAVP_LOG_INFO(kModule, "s4 world: sqrt(l2) %.1f mm | sigma_theta %.2f do | N %d / can %.0f | %d diem thieu tu the"
-                      " | cua so %.1f s (%d diem trong mask) | camera->mat top (LiDAR) %.1f mm",
+                      " | cua so %.1f s (%d diem trong mask) | camera->mat top (LiDAR) %.1f mm | rho %.0f mm, sigma_eff"
+                      " %.1f mm (LiDAR %.1f + tu the %.2f do), tau %.1f mm",
                       r.sqrt_l2_mm, r.sigma_theta_deg, r.n_inliers, r.n_required, r.n_pose_missing, r.window_used_s,
-                      r.n_window_points, r.plane_dist_mm);
+                      r.n_window_points, r.plane_dist_mm, r.rho_mm, r.sigma_eff_mm, live.cfg.fusion.world.lidar_sigma_mm,
+                      live.cfg.fusion.world.attitude_sigma_deg, r.tau_eff_mm);
     else if (live.cfg.fusion.method == FusionMethod::kWorld)
         UAVP_LOG_WARN(kModule, "s4: method world nhung khung moi nhat khong co tu the FC co vi tri -> dung cach image");
     return r;

@@ -107,6 +107,7 @@ void write_fusion_summary(JsonWriter& w, const FusionResult& r) {
     vec3(w, r.normal_W);
     w.key("lambda_mm2").begin_array().num(r.lambda_mm2[0]).num(r.lambda_mm2[1]).num(r.lambda_mm2[2]).end_array();
     w.key("sqrt_l2_mm").num(r.sqrt_l2_mm).key("sigma_theta_deg").num(r.sigma_theta_deg);
+    w.key("rho_mm").num(r.rho_mm).key("sigma_eff_mm").num(r.sigma_eff_mm).key("tau_eff_mm").num(r.tau_eff_mm);
     w.key("n_required").num(r.n_required).key("n_pose_missing").value(r.n_pose_missing).key("axis_x_W");
     vec3(w, r.axis_x_W);
     w.key("yaw_W_deg").num(r.yaw_W_deg).key("window_used_s").num(r.window_used_s);
